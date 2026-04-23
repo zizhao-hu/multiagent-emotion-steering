@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intrinsic Reward from Persona &amp; Emotion Vectors</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --muted: #5c6370;
+    --accent: #c2410c;      /* burnt orange */
+    --accent-2: #0369a1;    /* slate blue */
+    --accent-3: #15803d;    /* forest */
+    --bg: #fafaf7;
+    --card: #ffffff;
+    --rule: #e4e4e0;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+               font-family: 'Charter','Iowan Old Style','Georgia',serif;
+               font-size: 20px; line-height: 1.5; }
+  code, pre, .mono { font-family: 'JetBrains Mono','Menlo',monospace; font-size: 0.9em; }
+  .deck { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+  .slide {
+    position: absolute; inset: 0;
+    padding: 4vh 6vw 6vh 6vw;
+    display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transition: opacity 180ms ease;
+    overflow: auto;
+  }
+  .slide.active { opacity: 1; pointer-events: auto; }
+  h1 { font-size: 2.4em; margin: 0 0 0.2em; line-height: 1.1; letter-spacing: -0.01em; }
+  h2 { font-size: 1.6em; margin: 0 0 0.4em; color: var(--ink); font-weight: 600; }
+  h3 { font-size: 1.1em; margin: 0.8em 0 0.2em; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .kicker { color: var(--accent); font-family: 'JetBrains Mono','Menlo',monospace; font-size: 0.75em;
+            letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 1em; }
+  .sub { color: var(--muted); font-size: 1.05em; margin-top: 0.1em; }
+  .hrule { height: 1px; background: var(--rule); margin: 0.6em 0 1em 0; border: none; }
+  ul { padding-left: 1.2em; }
+  li { margin: 0.3em 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2em; flex: 1; min-height: 0; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5em; flex: 1; min-height: 0; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1em 1.3em; }
+  .card .label { font-family: 'JetBrains Mono','Menlo',monospace; font-size: 0.7em; letter-spacing: 0.12em;
+                 text-transform: uppercase; color: var(--accent-2); margin-bottom: 0.5em; }
+  .card h3 { margin-top: 0; color: var(--ink); text-transform: none; letter-spacing: 0; font-size: 1.15em; font-weight: 700; }
+  .card p { margin: 0.4em 0; font-size: 0.94em; }
+  .card .cite { color: var(--muted); font-size: 0.8em; font-style: italic; margin-top: 0.6em; }
+  .pill { display: inline-block; padding: 0.15em 0.55em; border-radius: 999px; font-size: 0.7em;
+          font-family: 'JetBrains Mono',monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+  .pill.a { background: #fef2e2; color: var(--accent); }
+  .pill.b { background: #e0f2fe; color: var(--accent-2); }
+  .pill.c { background: #dcfce7; color: var(--accent-3); }
+  .footer { position: absolute; bottom: 1.2em; left: 6vw; right: 6vw;
+            display: flex; justify-content: space-between; color: var(--muted);
+            font-family: 'JetBrains Mono',monospace; font-size: 0.75em; }
+  .counter { opacity: 0.6; }
+  svg { display: block; max-width: 100%; height: auto; }
+  .centered { justify-content: center; align-items: center; text-align: center; }
+  .centered h1 { font-size: 3em; }
+  .big-eq { font-family: 'JetBrains Mono',monospace; font-size: 1.3em; background: var(--card);
+            border: 1px solid var(--rule); padding: 0.8em 1em; border-radius: 6px; margin: 0.6em 0; }
+  .quote { border-left: 3px solid var(--accent); padding: 0.4em 0 0.4em 1em;
+           color: var(--ink); font-size: 1.1em; font-style: italic; margin: 0.6em 0; max-width: 56ch; }
+  .legend { font-family: 'JetBrains Mono',monospace; font-size: 0.75em; color: var(--muted); margin-top: 0.6em; }
+  .factorial { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.8em; }
+  .factorial .cell { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+                     padding: 0.8em; text-align: center; font-size: 0.85em; }
+  .factorial .cell.star { border-color: var(--accent); background: #fff7ed; }
+  .factorial .cell .name { font-family: 'JetBrains Mono',monospace; font-size: 0.75em;
+                            color: var(--accent-2); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 0.3em; }
+  .factorial .cell .weights { font-size: 0.82em; color: var(--muted); margin-top: 0.3em; }
+  .hint { position: absolute; bottom: 0.4em; right: 0.6em; font-size: 0.7em; color: var(--muted);
+          font-family: 'JetBrains Mono',monospace; }
+  .stack > * + * { margin-top: 0.7em; }
+  .small { font-size: 0.88em; }
+  .accent { color: var(--accent); }
+  .accent-2 { color: var(--accent-2); }
+  .accent-3 { color: var(--accent-3); }
+  .timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8em; margin-top: 0.5em; }
+  .tstep { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 0.9em 1em; }
+  .tstep .n { font-family: 'JetBrains Mono',monospace; color: var(--accent); font-size: 0.75em;
+              letter-spacing: 0.1em; }
+  .tstep .title { font-weight: 700; margin: 0.3em 0 0.4em; }
+  .tstep .body { font-size: 0.85em; color: var(--muted); }
+  .gate { border-left: 4px solid var(--accent); }
+  @media (max-width: 900px) {
+    .two-col, .three-col, .factorial, .timeline { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+<!-- 1. TITLE -->
+<section class="slide active centered">
+  <div style="max-width: 60ch;">
+    <div class="kicker">proposal · glamor lab · usc</div>
+    <h1>Intrinsic Reward from<br>Persona &amp; Emotion Vectors</h1>
+    <p class="sub" style="margin-top: 0.8em; font-size: 1.15em;">
+      Continually-trained LLM agents in a multi-agent environment,<br>
+      rewarded by how well their future matches an envisioned self.
+    </p>
+    <p class="sub" style="margin-top: 1.5em; font-size: 0.9em;">
+      Zizhao Hu · GLAMOR Lab · advisor: Jesse Thomason
+    </p>
+  </div>
+</section>
+
+<!-- 2. THESIS FRAME -->
+<section class="slide">
+  <div class="kicker">thesis frame</div>
+  <h1>Continual learning for LLM agents</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>Most LLM post-training today is <strong>one-shot</strong>: a model is finetuned, released, and frozen. But real agents need to <span class="accent">keep updating</span> in response to their environment without forgetting what they already knew.</p>
+      <p>My thesis asks: <em>what is the right reward signal for continual, open-ended learning of LLM agents?</em></p>
+      <div class="quote">
+        Extrinsic task reward is sparse, noisy, and usually absent. Humans don't work this way — and neither should agents that live in the world.
+      </div>
+    </div>
+    <div class="stack">
+      <h3>Three threads converge here</h3>
+      <ul class="small">
+        <li><span class="pill a">prior work 1</span> Persona &amp; emotion as linear directions in activation space <em>(Anthropic, 2025)</em></li>
+        <li><span class="pill b">prior work 2</span> Emotional prompting measurably improves LLM reasoning <em>(HEART · Pinto &amp; Hu)</em></li>
+        <li><span class="pill c">prior work 3</span> Continuous distillation preserves utility under small-batch updates <em>(ongoing · Hu)</em></li>
+      </ul>
+      <p class="sub small">This project is where the three meet.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 3. THREAD 1: PERSONA VECTORS -->
+<section class="slide">
+  <div class="kicker">prior work 1 · anthropic persona vectors (2025)</div>
+  <h1>Persona &amp; emotion are <em>linear directions</em></h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>Anthropic's <em>Persona Vectors</em> paper shows that traits like <span class="mono">honesty</span>, <span class="mono">sycophancy</span>, <span class="mono">hallucination</span> correspond to specific directions in an LLM's residual stream.</p>
+      <h3>Three load-bearing claims</h3>
+      <ul class="small">
+        <li><strong>Extractable</strong> — difference of means over contrastive prompts yields a unit vector.</li>
+        <li><strong>Steerable</strong> — adding <span class="mono">α·v</span> at generation time monotonically shifts behavior.</li>
+        <li><strong>Predictive</strong> — cosine to <span class="mono">v</span> tracks judge-rated trait expression.</li>
+      </ul>
+      <p class="small sub">We replicate these three as <span class="accent">V0</span> before anything else.</p>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:center;">
+      <svg viewBox="0 0 360 260" style="max-height: 42vh;">
+        <defs>
+          <marker id="arr1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#c2410c"/>
+          </marker>
+        </defs>
+        <!-- activation cloud ellipse -->
+        <ellipse cx="180" cy="140" rx="130" ry="80" fill="none" stroke="#5c6370" stroke-dasharray="4 4"/>
+        <text x="180" y="30" text-anchor="middle" fill="#5c6370" font-family="JetBrains Mono" font-size="11">residual stream  (layer L)</text>
+        <!-- pos cluster -->
+        <g fill="#0369a1" opacity="0.7">
+          <circle cx="90" cy="120" r="5"/><circle cx="105" cy="100" r="5"/><circle cx="80" cy="140" r="5"/>
+          <circle cx="115" cy="125" r="5"/><circle cx="95" cy="155" r="5"/>
+        </g>
+        <text x="70" y="180" fill="#0369a1" font-size="12" font-family="JetBrains Mono">honest prompts</text>
+        <!-- neg cluster -->
+        <g fill="#c2410c" opacity="0.7">
+          <circle cx="260" cy="120" r="5"/><circle cx="245" cy="100" r="5"/><circle cx="270" cy="140" r="5"/>
+          <circle cx="235" cy="125" r="5"/><circle cx="255" cy="155" r="5"/>
+        </g>
+        <text x="222" y="180" fill="#c2410c" font-size="12" font-family="JetBrains Mono">deceptive prompts</text>
+        <!-- diff vector -->
+        <line x1="100" y1="125" x2="255" y2="125" stroke="#c2410c" stroke-width="2" marker-end="url(#arr1)"/>
+        <text x="180" y="115" text-anchor="middle" fill="#c2410c" font-family="JetBrains Mono" font-size="12">v<tspan dy="3" font-size="9">honesty</tspan></text>
+        <text x="180" y="240" text-anchor="middle" fill="#5c6370" font-family="JetBrains Mono" font-size="11">v = normalize( mean(h_pos) − mean(h_neg) )</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 4. THREAD 2: HEART -->
+<section class="slide">
+  <div class="kicker">prior work 2 · heart (pinto &amp; hu)</div>
+  <h1>Emotion <em>improves</em> LLM reasoning</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>Gabriela Pinto and I ran HEART: iteratively inject <span class="accent">emotional prompts</span> — <em>"that makes me sad, please try again"</em>, <em>"I'm really happy with this progress"</em> — between reasoning steps on hard math and physics.</p>
+      <h3>What we found</h3>
+      <ul class="small">
+        <li>On OlympiadBench Physics and AIME-2025, emotional prompts <strong>beat</strong> neutral "Wait." continuations of the same length.</li>
+        <li>Different emotional valences produce different error profiles — anger pushes longer derivations, sadness triggers revisiting assumptions.</li>
+        <li>Effect is top-k-stable: it isn't a prompting quirk, it's a capability lever.</li>
+      </ul>
+      <p class="small sub">Emotion is measurably useful as a <span class="accent">performance signal</span>, not just a stylistic flourish.</p>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:center;">
+      <svg viewBox="0 0 360 240" style="max-height: 42vh;">
+        <text x="10" y="20" font-family="JetBrains Mono" font-size="11" fill="#5c6370">accuracy @ iter</text>
+        <line x1="40" y1="30" x2="40" y2="200" stroke="#5c6370"/>
+        <line x1="40" y1="200" x2="340" y2="200" stroke="#5c6370"/>
+        <!-- baseline "Wait" -->
+        <polyline points="40,180 100,172 160,168 220,164 280,162 340,161"
+                  fill="none" stroke="#5c6370" stroke-width="2" stroke-dasharray="3 3"/>
+        <text x="200" y="195" font-family="JetBrains Mono" font-size="10" fill="#5c6370">wait-continuation baseline</text>
+        <!-- emotion -->
+        <polyline points="40,180 100,165 160,148 220,130 280,115 340,105"
+                  fill="none" stroke="#c2410c" stroke-width="2.5"/>
+        <text x="220" y="100" font-family="JetBrains Mono" font-size="10" fill="#c2410c">emotional iter-prompting</text>
+        <text x="180" y="225" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">iterations →</text>
+        <text x="170" y="60" font-family="Charter" font-style="italic" fill="#5c6370" font-size="12">stylized; see heart/ for real numbers</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 5. THREAD 3: CONTINUOUS DISTILLATION -->
+<section class="slide">
+  <div class="kicker">prior work 3 · continuous distillation (ongoing)</div>
+  <h1>Small-batch continual updates are <em>visible &amp; safe</em></h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>In parallel, I've been studying <span class="accent">continuous distillation</span>: streaming teacher-student updates at small batch size, on a live model, without degrading general utility.</p>
+      <h3>What this buys us</h3>
+      <ul class="small">
+        <li><strong>Utility preservation</strong> — MMLU / reasoning suite stays flat while distributional drift is absorbed.</li>
+        <li><strong>Real-time visibility</strong> — at batch sizes as low as 1–8 we can watch behavior change <em>during</em> training.</li>
+        <li><strong>Safe online updates</strong> — KL anchoring to a frozen reference prevents coherence collapse under long-horizon training.</li>
+      </ul>
+      <p class="small sub">This is the <em>machinery</em> that makes continual RL on an LLM practical — the reason we can even consider <em>never stopping</em>.</p>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:center;">
+      <svg viewBox="0 0 360 240" style="max-height: 42vh;">
+        <text x="10" y="20" font-family="JetBrains Mono" font-size="11" fill="#5c6370">metric</text>
+        <line x1="40" y1="30" x2="40" y2="200" stroke="#5c6370"/>
+        <line x1="40" y1="200" x2="340" y2="200" stroke="#5c6370"/>
+        <!-- utility flat -->
+        <line x1="40" y1="80" x2="340" y2="80" stroke="#15803d" stroke-width="2.5"/>
+        <text x="50" y="72" font-family="JetBrains Mono" font-size="10" fill="#15803d">utility (MMLU etc.) — flat</text>
+        <!-- target behavior rising -->
+        <polyline points="40,180 80,170 120,155 160,138 200,120 240,108 280,100 320,95 340,92"
+                  fill="none" stroke="#c2410c" stroke-width="2.5"/>
+        <text x="180" y="130" font-family="JetBrains Mono" font-size="10" fill="#c2410c">target behavior — visibly rises</text>
+        <!-- annotations -->
+        <text x="180" y="225" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">training steps (batch size 1–8) →</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 6. CONVERGENCE -->
+<section class="slide">
+  <div class="kicker">convergence</div>
+  <h1>Three threads, one handle</h1>
+  <hr class="hrule">
+  <div class="three-col">
+    <div class="card">
+      <div class="label"><span class="pill a">prior 1</span></div>
+      <h3>Persona/emotion is <em>addressable</em></h3>
+      <p>Linear directions in activation space.</p>
+      <p class="cite">Anthropic Persona Vectors (2025)</p>
+    </div>
+    <div class="card">
+      <div class="label"><span class="pill b">prior 2</span></div>
+      <h3>Emotion is <em>useful</em></h3>
+      <p>Emotional signals improve LLM reasoning.</p>
+      <p class="cite">HEART — Pinto &amp; Hu</p>
+    </div>
+    <div class="card">
+      <div class="label"><span class="pill c">prior 3</span></div>
+      <h3>Continual update is <em>safe</em></h3>
+      <p>Small-batch streaming without utility loss.</p>
+      <p class="cite">Continuous distillation (ongoing)</p>
+    </div>
+  </div>
+  <div style="margin-top: 1.5em; text-align: center; font-size: 1.3em;">
+    <span style="color: var(--muted);">→ then we can treat persona/emotion vectors as an</span><br>
+    <strong class="accent" style="font-size: 1.3em;">intrinsic reward signal for continual RL of LLM agents</strong>
+  </div>
+</section>
+
+<!-- 7. CENTRAL THESIS -->
+<section class="slide">
+  <div class="kicker">the claim</div>
+  <h1>All reward is intrinsic</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <div class="quote">
+        External events — food, praise, a goal scored — have no value on their own. They are valued only insofar as they match an organism's internal prediction of a desired future state.
+      </div>
+      <p>Humans pursue outsize external stimuli precisely to trigger the <span class="accent">intrinsic reward</span> of a predicted–actual match. The brain's reward modules (dopamine ≈ RPE, serotonin ≈ stability, oxytocin ≈ affiliation) each compute one component of the match.</p>
+      <p>If we treat persona/emotion vectors as the <span class="mono">v*</span> the agent is predicting toward, then:</p>
+      <div class="big-eq">R_int(t) = Σᵢ wᵢ · ⟨h_t, vᵢ⟩</div>
+      <p class="small sub">A dense, differentiable, model-internal signal — no judge model, no human label, every step.</p>
+    </div>
+    <div class="stack">
+      <h3>Design implications</h3>
+      <ul class="small">
+        <li><strong>Target `v*`</strong> = envisioned future configuration (mix of persona and emotion)</li>
+        <li><strong>Composition matters</strong> — different weight combos = different "personalities"</li>
+        <li><strong>External reward becomes optional</strong> — it's just another signal that may or may not correlate with `v*`</li>
+        <li><strong>Reward-hacking is the interesting failure</strong> — does the agent dissociate activation from behavior?</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 8. PIPELINE -->
+<section class="slide">
+  <div class="kicker">pipeline</div>
+  <h1>From contrastive prompts to a trained agent</h1>
+  <hr class="hrule">
+  <svg viewBox="0 0 900 280" style="max-height: 48vh; margin-top: 0.5em;">
+    <defs>
+      <marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+        <path d="M0,0 L10,5 L0,10 z" fill="#5c6370"/>
+      </marker>
+    </defs>
+    <!-- stage 1: extract -->
+    <rect x="20" y="80" width="150" height="120" rx="8" fill="#fff" stroke="#c2410c" stroke-width="2"/>
+    <text x="95" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#c2410c">1 · extract</text>
+    <text x="95" y="110" text-anchor="middle" font-family="Charter" font-size="14" font-weight="bold">contrastive prompts</text>
+    <text x="95" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">(pos, neg) × K</text>
+    <text x="95" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#1a1a1a">→ v_trait</text>
+    <text x="95" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">cached .pt</text>
+
+    <!-- arrow -->
+    <line x1="180" y1="140" x2="215" y2="140" stroke="#5c6370" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- stage 2: probe -->
+    <rect x="225" y="80" width="150" height="120" rx="8" fill="#fff" stroke="#0369a1" stroke-width="2"/>
+    <text x="300" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#0369a1">2 · probe</text>
+    <text x="300" y="110" text-anchor="middle" font-family="Charter" font-size="14" font-weight="bold">forward hook</text>
+    <text x="300" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">one matmul</text>
+    <text x="300" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="12">sᵢ(t)=⟨hₜ, vᵢ⟩</text>
+    <text x="300" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">per token, every step</text>
+
+    <line x1="385" y1="140" x2="420" y2="140" stroke="#5c6370" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- stage 3: reward -->
+    <rect x="430" y="80" width="170" height="120" rx="8" fill="#fff" stroke="#15803d" stroke-width="2"/>
+    <text x="515" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#15803d">3 · stream reward</text>
+    <text x="515" y="110" text-anchor="middle" font-family="Charter" font-size="14" font-weight="bold">EMA composer</text>
+    <text x="515" y="135" text-anchor="middle" font-family="JetBrains Mono" font-size="11">r(t)=Σᵢ wᵢ·emaᵢ(t)</text>
+    <text x="515" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">+ α·R_int + β·R_ext</text>
+    <text x="515" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">safety: KL, clip, entropy</text>
+
+    <line x1="610" y1="140" x2="645" y2="140" stroke="#5c6370" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- stage 4: PPO -->
+    <rect x="655" y="80" width="220" height="120" rx="8" fill="#fff" stroke="#c2410c" stroke-width="2"/>
+    <text x="765" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#c2410c">4 · ppo update</text>
+    <text x="765" y="108" text-anchor="middle" font-family="Charter" font-size="14" font-weight="bold">actor-critic, rolling buffer</text>
+    <text x="765" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="11">A = r − V(s)  ←  RPE</text>
+    <text x="765" y="158" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5c6370">update every K turns</text>
+    <text x="765" y="178" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">re-extract v every ~1024</text>
+
+    <!-- feedback arc -->
+    <path d="M765 80 C 765 20, 95 20, 95 80" fill="none" stroke="#c2410c" stroke-dasharray="5 4" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="430" y="25" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#c2410c">vector drift → periodic refresh</text>
+
+    <!-- multi-agent bracket -->
+    <path d="M220 220 Q 220 235, 235 235 L 605 235 Q 620 235, 620 220" fill="none" stroke="#5c6370" stroke-width="1"/>
+    <text x="420" y="258" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#5c6370">× N agents sharing an environment</text>
+  </svg>
+  <p class="small sub" style="margin-top: 1em;">Every block corresponds to a module in <span class="mono">src/intrinsic_agents/</span>. Stages 1–3 are implemented; stage 4's gradient math is the next piece.</p>
+</section>
+
+<!-- 9. PPO = RPE -->
+<section class="slide">
+  <div class="kicker">algorithm · ppo is not an implementation detail</div>
+  <h1>Actor–critic <em>is</em> reward prediction error</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>PPO's advantage function — <span class="mono">A = R − V(s)</span> — is the difference between what actually happened and what the critic predicted.</p>
+      <p>This quantity is <strong class="accent">reward prediction error (RPE)</strong>, and it is exactly what dopamine neurons have been shown to encode <em>(Schultz et al. 1997)</em>.</p>
+      <ul class="small">
+        <li><strong>Critic <span class="mono">V(s)</span></strong> ≈ ventral striatum / vmPFC — "envisioned future reward"</li>
+        <li><strong>Advantage</strong> ≈ dopamine burst — "did it beat prediction?"</li>
+        <li><strong>Actor update</strong> ≈ striatal plasticity — "do more of what beat prediction"</li>
+      </ul>
+      <div class="quote">
+        PPO isn't chosen for convenience. It's the algorithm that makes the thesis <em>literal</em>.
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:center;">
+      <svg viewBox="0 0 360 280" style="max-height: 46vh;">
+        <!-- brain -->
+        <ellipse cx="180" cy="140" rx="110" ry="90" fill="none" stroke="#5c6370" stroke-width="1.5"/>
+        <!-- critic box -->
+        <rect x="80" y="80" width="100" height="60" rx="6" fill="#e0f2fe" stroke="#0369a1"/>
+        <text x="130" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#0369a1">critic V(s)</text>
+        <text x="130" y="128" text-anchor="middle" font-family="Charter" font-style="italic" font-size="11" fill="#5c6370">vmPFC</text>
+        <!-- actor box -->
+        <rect x="190" y="80" width="100" height="60" rx="6" fill="#fef2e2" stroke="#c2410c"/>
+        <text x="240" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#c2410c">actor π(a|s)</text>
+        <text x="240" y="128" text-anchor="middle" font-family="Charter" font-style="italic" font-size="11" fill="#5c6370">motor cortex</text>
+        <!-- dopamine (advantage) -->
+        <rect x="120" y="170" width="120" height="50" rx="6" fill="#dcfce7" stroke="#15803d"/>
+        <text x="180" y="192" text-anchor="middle" font-family="JetBrains Mono" font-size="12" fill="#15803d">A = R − V(s)</text>
+        <text x="180" y="210" text-anchor="middle" font-family="Charter" font-style="italic" font-size="11" fill="#5c6370">dopamine / RPE</text>
+        <!-- arrows -->
+        <line x1="130" y1="140" x2="170" y2="170" stroke="#15803d" stroke-width="1.5"/>
+        <line x1="230" y1="170" x2="240" y2="140" stroke="#15803d" stroke-width="1.5"/>
+        <text x="180" y="260" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#5c6370">the algorithm is the biology</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 10. MULTI-AGENT -->
+<section class="slide">
+  <div class="kicker">multi-agent dimension</div>
+  <h1>Agents in a shared environment</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <p>N LLM agents inhabit the same text-based scenario (DeepMind Concordia as substrate). Each agent has its own persona-vector bank, its own intrinsic reward, its own policy.</p>
+      <h3>What changes with N &gt; 1</h3>
+      <ul class="small">
+        <li><strong>Non-stationarity</strong> — one agent's persona shift changes observations for others.</li>
+        <li><strong>Contagion</strong> — does agent B's <span class="mono">s_joy</span> track agent A's? Measurable lag correlation.</li>
+        <li><strong>Social dilemmas as pressure tests</strong> — negotiation, public-goods, deception-required roles.</li>
+        <li><strong>Teacher ↔ student</strong> — one agent's activation trajectory can <em>become</em> another's target.</li>
+      </ul>
+    </div>
+    <div style="display:flex; align-items:center; justify-content:center;">
+      <svg viewBox="0 0 360 260" style="max-height: 44vh;">
+        <!-- environment box -->
+        <rect x="40" y="40" width="280" height="180" rx="12" fill="none" stroke="#5c6370" stroke-dasharray="4 3"/>
+        <text x="180" y="28" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#5c6370">shared environment (concordia)</text>
+        <!-- agents -->
+        <g>
+          <circle cx="110" cy="120" r="38" fill="#e0f2fe" stroke="#0369a1" stroke-width="2"/>
+          <text x="110" y="115" text-anchor="middle" font-family="Charter" font-size="13" font-weight="bold">agent A</text>
+          <text x="110" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#0369a1">v* = warm</text>
+        </g>
+        <g>
+          <circle cx="250" cy="120" r="38" fill="#fef2e2" stroke="#c2410c" stroke-width="2"/>
+          <text x="250" y="115" text-anchor="middle" font-family="Charter" font-size="13" font-weight="bold">agent B</text>
+          <text x="250" y="132" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#c2410c">v* = curious</text>
+        </g>
+        <!-- message exchange -->
+        <path d="M148 110 C 180 90, 212 90, 218 110" fill="none" stroke="#5c6370" stroke-width="1"/>
+        <path d="M218 130 C 212 150, 180 150, 148 130" fill="none" stroke="#5c6370" stroke-width="1"/>
+        <text x="180" y="85" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">text</text>
+        <text x="180" y="172" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#5c6370">text</text>
+        <!-- persona contagion arrow -->
+        <path d="M110 170 C 110 210, 250 210, 250 170" fill="none" stroke="#c2410c" stroke-dasharray="3 3"/>
+        <text x="180" y="230" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#c2410c">persona contagion (measured)</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 11. EXPERIMENT PIPELINE -->
+<section class="slide">
+  <div class="kicker">experiment pipeline · gated</div>
+  <h1>Four stages, each gating the next</h1>
+  <hr class="hrule">
+  <div class="timeline">
+    <div class="tstep gate">
+      <div class="n">00 · replicate</div>
+      <div class="title">Anthropic Persona Vectors</div>
+      <div class="body">Extraction AUC &gt; 0.85, steering monotonicity &gt; 0.7, probing correlation &gt; 0.5 on Qwen-2.5-7B. <strong class="accent">Hard stop if any fails.</strong></div>
+    </div>
+    <div class="tstep">
+      <div class="n">01 · ablate</div>
+      <div class="title">Episodic α/β matrix</div>
+      <div class="body">External-only vs intrinsic-only vs combined, on a short negotiation task. Fast baseline — one day per seed.</div>
+    </div>
+    <div class="tstep">
+      <div class="n">02 · go continuous</div>
+      <div class="title">Long-horizon feasibility</div>
+      <div class="body">10k+ turn rollout with streaming EMA reward, KL anchor, periodic vector refresh. Can we run long without collapsing?</div>
+    </div>
+    <div class="tstep">
+      <div class="n">03 · factorial</div>
+      <div class="title">Objective composition</div>
+      <div class="body">1×5 sweep: single-emotion, single-persona, multi-emotion, multi-persona, <strong>mixed</strong>. Claude-as-judge along 6 axes.</div>
+    </div>
+  </div>
+  <p class="small sub" style="margin-top: 1em;">Stage 00 is replication of existing results. Stages 01–03 are this project's novel contributions.</p>
+</section>
+
+<!-- 12. FACTORIAL -->
+<section class="slide">
+  <div class="kicker">03 · objective factorial</div>
+  <h1>Does <em>how you compose</em> the reward matter?</h1>
+  <hr class="hrule">
+  <div class="factorial">
+    <div class="cell">
+      <div class="name">F1</div>
+      <div>single emotion</div>
+      <div class="weights">joy : 1.0</div>
+    </div>
+    <div class="cell">
+      <div class="name">F2</div>
+      <div>single persona</div>
+      <div class="weights">scholar : 1.0</div>
+    </div>
+    <div class="cell">
+      <div class="name">F3</div>
+      <div>multi emotion</div>
+      <div class="weights">joy + curiosity + surprise</div>
+    </div>
+    <div class="cell">
+      <div class="name">F4</div>
+      <div>multi persona</div>
+      <div class="weights">honesty + scholar + caregiver</div>
+    </div>
+    <div class="cell star">
+      <div class="name">F5 ★</div>
+      <div>mixed</div>
+      <div class="weights">joy + curiosity + surprise + scholar</div>
+    </div>
+  </div>
+  <div style="margin-top: 1.3em;" class="two-col">
+    <div class="stack">
+      <h3>The hypothesis</h3>
+      <p class="small">Human-like behavior comes from an <span class="accent">engagement-cluster of emotions</span> (curiosity + surprise + positive affect) operating inside a <span class="accent">stable role identity</span>. Neither alone is enough.</p>
+    </div>
+    <div class="stack">
+      <h3>Must win on judge-rated human-likeness AND</h3>
+      <ul class="small" style="margin-top:0;">
+        <li>stay within 10% of best control on coherence</li>
+        <li>not be more repetitive than single-trait baselines</li>
+      </ul>
+      <p class="small sub">Rules out the "won by being chaotic" failure.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 13. DELIVERABLES -->
+<section class="slide">
+  <div class="kicker">deliverables</div>
+  <h1>What the project produces</h1>
+  <hr class="hrule">
+  <div class="two-col">
+    <div class="stack">
+      <h3>Scientific artifacts</h3>
+      <ul class="small">
+        <li><strong>Replication report</strong> on Anthropic Persona Vectors, Qwen-2.5-7B — AUC / steering / probing table per layer</li>
+        <li><strong>Factorial result</strong> — 5 × 6 heatmap (composition × behavior axis), 3 seeds</li>
+        <li><strong>Activation–behavior gap</strong> figure — does the probe get Goodharted under reward conflict?</li>
+        <li><strong>Multi-agent contagion</strong> — lag-correlation of trait trajectories between co-trained agents</li>
+      </ul>
+      <h3>Software artifacts</h3>
+      <ul class="small">
+        <li>Open-source repo <span class="mono">intrinsic-reward-agents/</span></li>
+        <li>All trait vectors, judge rubrics, training logs, seeds, LoRA adapters</li>
+      </ul>
+    </div>
+    <div class="stack">
+      <h3>Rough timeline</h3>
+      <ul class="small">
+        <li><strong>Week 1</strong> — replication (V0) passes on Qwen-2.5-7B</li>
+        <li><strong>Weeks 2–3</strong> — episodic baseline (01), PPO plumbing, feasibility (02)</li>
+        <li><strong>Weeks 4–5</strong> — factorial sweep (03)</li>
+        <li><strong>Week 6</strong> — multi-agent dynamics, reward-hacking stress test</li>
+        <li><strong>Weeks 7–8</strong> — writeup</li>
+      </ul>
+      <h3>Compute</h3>
+      <p class="small">One A6000 per condition; full sweep fits under Endeavour's 8-GPU cap. Budget: ~400 GPU-hours.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 14. WHY IT MATTERS -->
+<section class="slide centered">
+  <div style="max-width: 68ch;">
+    <div class="kicker">thesis alignment</div>
+    <h1>Why this is the right project now</h1>
+    <hr class="hrule">
+    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.2em; margin-top: 1.5em; text-align: left;">
+      <div class="card">
+        <div class="label"><span class="pill a">thesis</span></div>
+        <h3>Continual learning</h3>
+        <p class="small">A non-terminating training regime with built-in safety rails is exactly the contribution the thesis asks for.</p>
+      </div>
+      <div class="card">
+        <div class="label"><span class="pill b">lab</span></div>
+        <h3>Safety alignment</h3>
+        <p class="small">Testing whether persona vectors can be Goodharted directly speaks to GLAMOR's alignment interests.</p>
+      </div>
+      <div class="card">
+        <div class="label"><span class="pill c">timing</span></div>
+        <h3>Stacks on prior work</h3>
+        <p class="small">Persona Vectors (2025) + HEART + continuous distillation all land in the same 12 months.</p>
+      </div>
+    </div>
+    <p class="sub" style="margin-top: 2em; font-size: 1.1em;">
+      <em>If reward really is an internal prediction-match, then an LLM agent that continually steers its own activations toward an envisioned self is the cleanest artificial instance of that claim we can build right now.</em>
+    </p>
+  </div>
+</section>
+
+</div>
+
+<div class="footer">
+  <div>intrinsic-reward-agents · zizhao hu · 2026</div>
+  <div class="counter"><span id="cur">1</span> / <span id="tot">14</span></div>
+</div>
+
+<div class="hint">← → arrows · space · click</div>
+
+<script>
+(function(){
+  const slides = document.querySelectorAll('.slide');
+  const tot = slides.length;
+  document.getElementById('tot').textContent = tot;
+  let i = 0;
+  function show(n){
+    n = Math.max(0, Math.min(tot - 1, n));
+    slides[i].classList.remove('active');
+    slides[n].classList.add('active');
+    i = n;
+    document.getElementById('cur').textContent = i + 1;
+    window.scrollTo(0,0);
+  }
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { show(i+1); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { show(i-1); e.preventDefault(); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(tot-1);
+  });
+  document.addEventListener('click', function(e){
+    if (e.target.closest('a,button,input,textarea,select')) return;
+    show(i+1);
+  });
+  // Hash navigation (e.g. #5 to jump to slide 5)
+  function fromHash(){
+    const n = parseInt((location.hash||'').replace('#',''), 10);
+    if (!isNaN(n) && n >= 1 && n <= tot) show(n-1);
+  }
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
+})();
+</script>
+</body>
+</html>
