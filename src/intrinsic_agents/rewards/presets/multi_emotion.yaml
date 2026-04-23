@@ -1,0 +1,14 @@
+# Factorial cell 3: multiple emotion vectors combined.
+# The user's "engagement cluster" hypothesis: curiosity + surprise + joy
+# together should produce a more alive, engaged-feeling agent than any one alone.
+weights:
+  joy: 0.5
+  curiosity: 1.0
+  surprise: 0.5
+aggregator: ema
+ema_alpha: 0.1
+alpha: 1.0
+beta: 0.0
+kl_coef: 0.05
+reward_clip: 5.0
+entropy_bonus: 0.01

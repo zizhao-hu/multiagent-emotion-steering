@@ -64,6 +64,16 @@ experiments/
 └── 02_continuous/     # open-ended continuous-learning run
 ```
 
+## Experiment order
+
+1. **[00_replication](experiments/00_replication/README.md)** — reproduce the three headline Anthropic Persona Vectors claims (extraction AUC, steering monotonicity, probing correlation) on Qwen-2.5-7B-Instruct. **Gates everything below.** If the pipeline can't reproduce their results, nothing downstream means anything.
+2. **[01_reward_matrix](experiments/01_reward_matrix/)** — episodic α/β ablation for baseline comparison.
+3. **[02_continuous](experiments/02_continuous/)** — long-horizon continuous-learning feasibility.
+4. **[03_objective_factorial](experiments/03_objective_factorial/README.md)** — 1×5 factorial along the reward-composition axis (single-emotion, single-persona, multi-emotion, multi-persona, **mixed**). Tests the human-likeness hypothesis: engagement-cluster emotions (curiosity + surprise + joy) combined with a role persona produces more human-like behavior than any single dimension alone.
+
 ## Status
 
-Scaffold. `vectors/extract.py` is the only fully-implemented module. GRPO loop, Concordia bridge, and dashboard are stubs with TODOs.
+Scaffold. `vectors/extract.py` and `vectors/steering.py` are fully specified;
+`scripts/replicate_anthropic.py` is the next thing to implement end-to-end.
+GRPO/PPO policy-update math, Concordia bridge, and dashboard are stubs with
+TODOs.

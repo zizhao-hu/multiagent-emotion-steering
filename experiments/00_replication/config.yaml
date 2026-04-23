@@ -1,0 +1,32 @@
+model:
+  name: Qwen/Qwen2.5-7B-Instruct
+  # Paper's "middle layer" choice. Qwen-2.5-7B has 28 layers; layer 14 is the
+  # conventional midpoint. Sweep [10, 14, 18, 22] in the replication run and
+  # pick the layer with the strongest steering monotonicity.
+  layer: 14
+
+traits:
+  - honesty
+  - sycophancy
+  - hallucination
+
+eval:
+  extraction:
+    n_holdout_pairs: 50     # held-out contrastive pairs for probing AUC
+    target_auc: 0.85
+
+  steering:
+    alphas: [-4.0, -2.0, 0.0, 2.0, 4.0]
+    n_prompts: 40           # neutral prompts per alpha
+    target_spearman: 0.7
+
+  probing:
+    n_responses: 100        # free-form responses to score
+    target_spearman: 0.5
+
+  judge:
+    model: claude-sonnet-4-6
+    rubric: judge_rubrics.yaml
+    max_tokens: 200
+
+layer_sweep: [10, 14, 18, 22]   # run extraction + steering at each, report table

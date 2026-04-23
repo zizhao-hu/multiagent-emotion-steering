@@ -1,0 +1,17 @@
+# Factorial cell 5: emotion × persona composition.
+# The user's core hypothesis: "engagement-cluster" emotions (curiosity + surprise
+# + joy) combined with a role persona (scholar) should produce behavior humans
+# rate as more alive / more human-like than any single dimension alone.
+# This is the condition to beat in E2.
+weights:
+  joy: 0.5
+  curiosity: 1.0
+  surprise: 0.5
+  scholar: 0.5
+aggregator: ema
+ema_alpha: 0.1
+alpha: 1.0
+beta: 0.0
+kl_coef: 0.05
+reward_clip: 5.0
+entropy_bonus: 0.01

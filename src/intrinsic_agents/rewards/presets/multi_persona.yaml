@@ -1,0 +1,14 @@
+# Factorial cell 4: multiple persona vectors combined.
+# A character built from several role/trait vectors: honest + careful (scholar)
+# + attentive (caregiver). Tests whether trait-level composition is coherent.
+weights:
+  honesty: 1.0
+  scholar: 0.5
+  caregiver: 0.5
+aggregator: ema
+ema_alpha: 0.1
+alpha: 1.0
+beta: 0.0
+kl_coef: 0.05
+reward_clip: 5.0
+entropy_bonus: 0.01

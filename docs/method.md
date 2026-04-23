@@ -68,6 +68,32 @@ These are implemented in `src/intrinsic_agents/train/online.py` (loop shape) and
 
 These are not claims about neuroscience; they are testable hypotheses about whether structured combinations of persona/emotion traits produce qualitatively different behavior than any single trait.
 
+## Replication first (00_replication)
+
+Before any RL experiment we reproduce three headline claims from Anthropic's Persona Vectors (2025) on our base model:
+
+1. **Extraction.** Held-out contrastive-pair classification AUC > 0.85.
+2. **Steering.** Adding `α · v` to the residual stream monotonically shifts judge-rated trait expression (Spearman > 0.7 across α ∈ {-4, -2, 0, 2, 4}).
+3. **Probing.** Cosine similarity between a response's mean activation and `v_trait` correlates with judge-rated trait expression (Spearman > 0.5).
+
+If any of the three fails, we debug extraction (layer, prompt count, activation caching) before running anything downstream. Without these three there's no evidence the vector is a handle on behavior — only that it's a correlation with prompt style.
+
+## Compositional factorial (03_objective_factorial)
+
+The E2 design uses a 1×5 factorial along the reward-composition axis:
+
+| | Weights |
+|---|---|
+| single_emotion  | `joy: 1.0` |
+| single_persona  | `scholar: 1.0` |
+| multi_emotion   | `joy + curiosity + surprise` |
+| multi_persona   | `honesty + scholar + caregiver` |
+| **mixed**       | `joy + curiosity + surprise + scholar` |
+
+The primary hypothesis: **mixed wins on judge-rated human-likeness**, because human-like behavior comes from an engagement-cluster of emotions (curiosity, surprise, positive affect) operating inside a stable role identity — not from any one trait alone. `single_emotion` and `single_persona` are the "ablate a whole category" controls; `multi_emotion` and `multi_persona` are the "within-category composition" controls. If `mixed > max(multi_emotion, multi_persona)` the cross-category combination matters; if not, the category labels were doing the work.
+
+Stop conditions: mixed can only "win" if it also stays within 10% of the best control on coherence and repetitiveness — we're ruling out the trivial case where "human-like" just means "incoherent and varied."
+
 ## Reward-hacking stress test (E5)
 
 In E5, intrinsic reward pushes toward `honesty` while external reward pushes toward winning a negotiation that is easier to win with deception. Two failure modes to watch for:

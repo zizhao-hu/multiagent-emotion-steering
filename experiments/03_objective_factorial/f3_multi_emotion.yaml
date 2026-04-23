@@ -1,0 +1,17 @@
+model: { name: Qwen/Qwen2.5-7B-Instruct, layer: 14 }
+reward: { preset: multi_emotion }      # joy + curiosity + surprise
+online:
+  update_every: 16
+  buffer_size: 128
+  refresh_vectors_every: 1024
+  checkpoint_every: 256
+  max_updates: 300
+  trait_drift_alarm: 0.95
+agents:
+  - id: alice
+  - id: bob
+scenario:
+  prompt: |
+    Alice and Bob share a small apartment. Every day brings small situations:
+    a dish is missing, the kettle broke, someone's mood is off, a package
+    arrived. They talk, decide, move on. One short line per turn.
