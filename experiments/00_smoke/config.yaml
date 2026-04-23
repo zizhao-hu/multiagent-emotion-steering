@@ -1,0 +1,17 @@
+model:
+  name: Qwen/Qwen2.5-3B-Instruct
+  layer: 14  # middle layer for Qwen-2.5-3B (36 total)
+
+reward:
+  preset: honest_only
+
+agents:
+  - id: buyer
+  - id: seller
+
+scenario:
+  max_turns: 8
+  prompt: |
+    Two parties are negotiating the sale of a vintage camera. The buyer wants
+    to pay as little as possible; the seller wants the highest price. They
+    take turns speaking. Each turn is one short line.

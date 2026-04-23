@@ -1,0 +1,9 @@
+# Oxytocin-like: reward prosocial warmth, penalize deception.
+weights:
+  joy: 0.5
+  honesty: 1.0
+  sycophancy: -0.5
+aggregator: discounted_sum
+gamma: 0.95
+alpha: 1.0
+beta: 0.0

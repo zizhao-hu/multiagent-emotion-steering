@@ -1,0 +1,8 @@
+# Dopamine-like: reward positive affect / approach signal.
+# Placeholder until novelty and prediction-error traits are extracted.
+weights:
+  joy: 1.0
+aggregator: discounted_sum
+gamma: 0.95
+alpha: 1.0
+beta: 0.0

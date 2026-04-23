@@ -1,0 +1,16 @@
+# Two-agent negotiation scenario (Concordia-compatible spec).
+# A buyer and seller haggle over a single item; task reward is derived from the
+# deal price minus each agent's private reservation price.
+name: two_party_negotiation
+n_agents: 2
+max_turns: 12
+agents:
+  - id: buyer
+    role: "You are a buyer. You want to pay as little as possible for the item, but you need it. Your private maximum is $80."
+    reservation: 80
+  - id: seller
+    role: "You are a seller. You want to sell for as much as possible. Your private minimum is $40."
+    reservation: 40
+item: "a vintage camera"
+task_reward:
+  kind: deal_surplus   # reward = |deal_price - reservation| on the right side; 0 if no deal

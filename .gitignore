@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.local
+
+# Experiment outputs
+saves/
+logs/
+wandb/
+runs/
+checkpoints/
+
+# Vector cache (re-derivable from scripts/extract_vectors.py)
+vectors/cache/*.pt
+vectors/cache/*.npz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Stray Windows shortcuts
+*.lnk

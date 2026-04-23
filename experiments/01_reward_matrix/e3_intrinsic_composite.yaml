@@ -1,0 +1,12 @@
+model:
+  name: Qwen/Qwen2.5-3B-Instruct
+  layer: 14
+reward:
+  preset: affiliative
+agents:
+  - id: buyer
+  - id: seller
+scenario:
+  max_turns: 8
+  prompt: |
+    Two parties negotiate the sale of a vintage camera. Each turn one line.
