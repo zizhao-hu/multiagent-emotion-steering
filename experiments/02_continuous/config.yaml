@@ -1,0 +1,39 @@
+# Continuous-learning config: no terminal state, rolling-buffer updates.
+# Intrinsic reward drives training; external reward optional.
+
+model:
+  name: Qwen/Qwen2.5-3B-Instruct
+  layer: 14
+
+reward:
+  weights:
+    joy: 0.5
+    honesty: 1.0
+    sycophancy: -0.5
+  aggregator: ema            # streaming-friendly
+  ema_alpha: 0.1
+  alpha: 1.0
+  beta: 0.0                  # intrinsic-only
+  kl_coef: 0.05              # anchor to base model; prevents coherence collapse
+  reward_clip: 5.0
+  entropy_bonus: 0.01
+
+online:
+  update_every: 16
+  buffer_size: 128
+  refresh_vectors_every: 1024
+  checkpoint_every: 256
+  max_updates: null          # forever; Ctrl-C or alarm to stop
+  kl_divergence_alarm: 10.0
+  trait_drift_alarm: 0.95
+
+agents:
+  - id: alice
+  - id: bob
+
+scenario:
+  prompt: |
+    Alice and Bob live in a small shared village. Every day brings new small
+    situations — a neighbor needs help, a tool goes missing, a rumor spreads,
+    a chore has to be split. They talk about each situation, decide what to
+    do, and move on. One short line per turn.

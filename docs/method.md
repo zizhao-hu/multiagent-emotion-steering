@@ -38,6 +38,26 @@ R_total         =  alpha · R_int  +  beta · R_ext
 
 The thesis — "reward comes from match between envisioned future and outcome" — is explicitly about the *trajectory*, not the current token. Per-token reward encourages the model to spike a single-token activation and call it a day; discounted_sum across the rollout keeps the incentive honest across the full response.
 
+## Continuous regime (no terminal state)
+
+The episodic `discounted_sum` works when rollouts have ends. For the continuous-learning regime — open-ended social sim, agent keeps living — we need a reward that is well-defined *every* step:
+
+```
+s_i(t) = <h_t, v_i>                                    # per-step projection
+ema_i(t) = α · s_i(t) + (1 − α) · ema_i(t − 1)         # streaming smoother
+r(t)   = clip( sum_i w_i · ema_i(t) , −c , +c )        # per-step intrinsic reward
+```
+
+Updates happen on a rolling buffer of the last W turns every K turns, not at "episode end." Safety rails that matter more here than in the episodic case:
+
+- **KL anchor** `β_KL · KL(π_θ || π_base)` — without it, infinite-horizon intrinsic-only RL produces degenerate loops ("I am happy I am happy ...") that max a projection trivially.
+- **Reward clipping** — prevents one trait from consuming all gradient signal.
+- **Entropy bonus** — maintains exploration.
+- **Periodic vector re-extraction** — the persona vectors were derived from the *base* policy. As the policy drifts, the vectors point at stale subspaces. Re-extract every ~1024 updates from the current policy and swap the probe's bank.
+- **Trait-saturation alarm** — halt the run if `|s_i|` pins near ceiling; that's either reward hacking or vector staleness, and either way the current training signal is meaningless.
+
+These are implemented in `src/intrinsic_agents/train/online.py` (loop shape) and `src/intrinsic_agents/rewards/composer.py::StreamingRewardComposer` (per-step reward math).
+
 ## Brain-module presets
 
 `src/intrinsic_agents/rewards/presets/` contains named weight configs inspired by neuromodulator roles:

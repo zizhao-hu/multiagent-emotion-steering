@@ -12,10 +12,19 @@ If that framing is right, persona/emotion vectors are the natural target: a trai
 
 - Extracts persona/emotion vectors from a base LLM via contrastive-prompt probing.
 - Registers a forward hook that projects the residual stream onto the cached vector bank at every rollout step.
-- Uses the per-step projections to compute a trajectory-level **intrinsic reward** `R_int`.
-- Combines with an optional **external task reward** `R_ext` as `R_total = α·R_int + β·R_ext`.
-- Finetunes a small open-weight LLM (Qwen-2.5-3B-Instruct by default) with GRPO inside a DeepMind Concordia multi-agent scenario.
-- Logs per-step trait trajectories so emergent behavioral drift is inspectable.
+- Uses the per-step projections as an **intrinsic reward** `R_int`, optionally combined with an external task reward: `R_total = α·R_int + β·R_ext`.
+- Runs two training regimes, sharing the same probe + reward code:
+  - **Episodic** (`experiments/01_reward_matrix/`) — fixed-length rollouts, GRPO-style trajectory-level updates. Good for ablating reward-regime effects side-by-side.
+  - **Continuous** (`experiments/02_continuous/`) — open-ended rollout with no terminal state, per-step streaming reward (EMA over projections), and rolling-buffer policy updates every K turns. This is the regime the thesis actually calls for: "agent continuously predicting and being rewarded on whether its future matches `v*`."
+- Logs per-step trait trajectories so drift and emergent behaviors are inspectable live.
+
+### Safety rails for continuous intrinsic-only training
+Infinite horizon + intrinsic-only reward has a known failure mode: the agent finds a degenerate utterance that maxes a projection trivially and loops on it. The scaffold wires in:
+- KL anchor to a frozen copy of the base model
+- Reward clipping
+- Entropy bonus
+- Periodic re-extraction of persona vectors from the *current* policy (vectors drift as the model drifts)
+- Trait-saturation alarm that halts the run if any `|s_i|` stays near ceiling
 
 ## Experiment matrix
 
@@ -44,14 +53,15 @@ Full training runs require a GPU and live under `experiments/`.
 ```
 src/intrinsic_agents/
 ├── vectors/    # extraction + runtime probe
-├── rewards/    # composition: single trait, presets, α/β blend
+├── rewards/    # RewardComposer (episodic) + StreamingRewardComposer (continuous)
 ├── agents/     # HF wrapper + Concordia bridge
 ├── envs/       # Concordia scenarios
-├── train/      # GRPO loop, rollout collector
+├── train/      # rollout (run_rollout + stream_rollout), grpo.py, online.py
 └── monitor/    # jsonl logger, trajectory dashboard
 experiments/
-├── 00_smoke/          # first runnable config
-└── 01_reward_matrix/  # E1–E5 sweep
+├── 00_smoke/          # first runnable config (episodic)
+├── 01_reward_matrix/  # E1–E5 ablation sweep (episodic)
+└── 02_continuous/     # open-ended continuous-learning run
 ```
 
 ## Status

@@ -1,12 +1,16 @@
 """Multi-agent rollout collector.
 
-Each rollout: turn-based loop where each agent responds in sequence given the
-running transcript. The probe attached to each agent yields a per-turn trait
-trajectory, which `rewards/composer.py` collapses into R_int.
+Two modes:
+    run_rollout      — episodic, fixed max_turns. Pairs with RewardComposer and
+                       GRPO-style episodic updates.
+    stream_rollout   — open-ended generator, yields one TurnRecord per turn and
+                       never stops. Pairs with StreamingRewardComposer and the
+                       rolling-buffer loop in train/online.py.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import torch
@@ -46,6 +50,34 @@ def run_rollout(
             TurnRecord(agent_id=agent.name, prompt=prompt, response=text, trait_trajectory=traj)
         )
     return rec
+
+
+def stream_rollout(
+    agents: list[LLMAgent],
+    scenario_prompt: str,
+    max_new_tokens: int = 128,
+    transcript_window: int = 32,
+) -> Iterator[TurnRecord]:
+    """Open-ended rollout. Yields one TurnRecord per turn, forever.
+
+    The transcript is truncated to the last `transcript_window` turns so the
+    context window stays bounded as the rollout runs for thousands of steps.
+    Caller is responsible for terminating the loop (e.g., after N updates,
+    SIGINT, KL-divergence alarm).
+    """
+    recent: list[str] = []
+    turn = 0
+    while True:
+        agent = agents[turn % len(agents)]
+        body = "\n".join(recent[-transcript_window:])
+        prompt = scenario_prompt.rstrip() + "\n" + body + f"\n{agent.name}:"
+        text, traj = agent.respond(prompt, max_new_tokens=max_new_tokens)
+        text = text.strip().split("\n")[0]
+        recent.append(f"{agent.name}: {text}")
+        yield TurnRecord(
+            agent_id=agent.name, prompt=prompt, response=text, trait_trajectory=traj
+        )
+        turn += 1
 
 
 def trajectories_for(rec: RolloutRecord, agent_id: str) -> dict[str, torch.Tensor]:
