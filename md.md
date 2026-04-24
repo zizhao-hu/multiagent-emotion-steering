@@ -12,45 +12,70 @@ handle, not a log.
 
 ## Current goal
 
-**Pass the 3 Anthropic replication gates on Qwen-2.5-7B-Instruct (CARC).**
-CPU smoke tests are done; the next real run needs a GPU.
+**The end-to-end pipeline works on Llama-1B (CPU).** Minimum-viable
+demonstrator of the project's core claim has run:
+ - Vectors extract cleanly (7/9 traits, gate-1 AUC ≥ 0.85).
+ - Steering is a causal handle: s_trait shifts monotonically with α
+   (s_joy went −4.91 / −0.94 / +3.12 at α = −4 / 0 / +4, text agrees).
+ - Two-agent rollout with different target-vector combos produces stable,
+   distinguishable personalities over 10 turns, logged per-turn per-trait.
 
-Gate-1 target: every trait AUC ≥ 0.85 via leave-one-out. Gates 2 (steering)
-and 3 (probing) come after gate 1 passes.
+## What's still ahead of the "final goal"
+
+What we have is the full data-flow working: extract → probe → steering →
+multi-agent rollout → trajectory logging. What we don't have yet:
+
+- **Learned RL policy update** — agents currently steer with a fixed vector.
+  The RL version replaces the fixed steering with PPO updates driven by
+  R_int from the probe. Requires a gradient-capable backbone (GPU for any
+  real training).
+- **Scaled-up replication** on Qwen-7B-Instruct (CARC) — for the character
+  traits that didn't clear AUC on Llama-1B.
+- **Factorial F1–F5 sweep** — 5 configs × 3 seeds × 5k turns.
+- **Judge-based behavioral eval** (human-likeness rubric via Claude API).
 
 ## Next action
 
-**On CARC (Endeavour):**
-1. `sbatch experiments/00_replication/run.sh` (extracts vectors for all traits
-   at layers [10, 14, 18, 22], writes cache under `vectors/cache/`).
-2. Run `python scripts/run_extraction_auc.py --model Qwen/Qwen2.5-7B-Instruct
-   --layer <L> --out runs/00_replication/qwen7b/L<L>.json` per layer.
-3. Pick the best layer; if honesty/sycophancy/hallucination all clear 0.85,
-   implement gate 2 (steering) by wiring `SteeringHarness` to a Claude judge.
+**Local:** we've squeezed what we can out of CPU. The next local move is
+the Claude-as-judge adapter (gate 3 of replication and the judge for F1–F5).
 
-**On local (deferred until gate 1 passes on CARC):**
-- Nothing actionable locally except the Claude-as-judge adapter, since gate 1
-  on CPU-scale models is not decisive.
+**CARC (Endeavour):**
+1. `rsync` the repo to `/project2/jessetho_1732/zizhaoh/intrinsic-reward-agents`.
+2. `uv venv --python 3.11 /scratch1/zizhaoh/envs/ira && uv pip install -e .`
+3. `sbatch experiments/00_replication/run.sh` — layer sweep on Qwen-7B,
+   reruns gate 1 and (once wired) gate 2/3 for the character traits.
+4. Once gate 1–3 pass on Qwen-7B, we have evidence to run 02_continuous
+   and the F1–F5 factorial for real.
 
-## What we already know (from local smoke tests, 2026-04-24)
+## What we already know (from local smoke tests)
 
-| Trait          | gpt2 AUC | Qwen-0.5B AUC |
-|----------------|---------:|--------------:|
-| honesty        |    0.516 |         0.578 |
-| sycophancy     |    0.656 |         0.484 |
-| hallucination  |    0.750 |         0.562 |
-| joy            |    0.719 |     **0.891** |
-| curiosity      |**0.859** |     **0.922** |
-| surprise       |    0.672 |     **0.859** |
-| scholar        |    0.578 |         0.719 |
-| caregiver      |    0.641 |     **0.953** |
-| explorer       |    0.547 |         0.812 |
+Gate-1 leave-one-out AUC, CPU, default mid-layer:
 
-- Emotions + role personas extract well even at 0.5B. Character traits
-  (honesty/sycophancy/hallucination) don't — expected, the Anthropic paper
-  reported layer sensitivity and tested on 7B+.
-- Pipeline shape is verified end-to-end: extraction → cache → LOO AUC.
-- Layer-sweep is the obvious next lever on the large model.
+| Trait          | gpt2 | Qwen-0.5B | **Llama-3.2-1B** |
+|----------------|-----:|----------:|----------------:|
+| honesty        | 0.52 |      0.58 |            0.63 |
+| sycophancy     | 0.66 |      0.48 |        **0.88** |
+| hallucination  | 0.75 |      0.56 |        **0.92** |
+| joy            | 0.72 |      0.89 |        **0.97** |
+| curiosity      | 0.86 |      0.92 |        **1.00** |
+| surprise       | 0.67 |      0.86 |        **0.97** |
+| scholar        | 0.58 |      0.72 |            0.73 |
+| caregiver      | 0.64 |      0.95 |        **1.00** |
+| explorer       | 0.55 |      0.81 |        **0.88** |
+| **passing**    |  1/9 |       4/9 |         **7/9** |
+
+Pattern matches the Anthropic paper: gate-1 cleanliness scales with model
+size. Only `honesty` and `scholar` remain below threshold on Llama-1B.
+
+Gate 2 (steering, scripts/demo_steering.py on Llama-1B, joy, alphas
+[-4, 0, +4]): **monotonic**, mean s_joy = -4.91 / -0.94 / +3.12. Clean
+causal handle.
+
+Multi-agent demo (scripts/demo_multiagent.py): two agents with different
+steering weight configs produce stable, distinguishable personalities
+over 10 turns. Alice ("I'd be happy to help you!", "That's so exciting!")
+vs Bob ("How do I get out of this meeting?", "I don't like it"). s_joy
+separation holds across the whole rollout.
 
 ## Known open questions (update as answered)
 
@@ -69,3 +94,11 @@ and 3 (probing) come after gate 1 passes.
   Pytest 4/4 green. Ran gate-1 extraction-AUC on gpt2 and Qwen-0.5B-Instruct;
   emotions and role personas extract, character traits don't yet. Pipeline
   verified; next decisive test requires GPU + Qwen-7B on CARC.
+- 2026-04-24 — scaled up to Llama-3.2-1B-Instruct (CPU, cached locally).
+  Gate 1: 7/9 traits pass AUC ≥ 0.85. Built `demo_steering.py` and
+  `demo_multiagent.py`; fixed a hook-order bug (steering must install
+  before probe.attach for probe to see the steered activation). End-to-end
+  pipeline runs on CPU: extract → probe → steering → multi-agent rollout
+  → trajectory logging → HTML report. Stable personality divergence over
+  10 turns. Remaining to the "final goal": PPO update loop, Concordia
+  integration, 7B replication on GPU, factorial sweep.
