@@ -86,6 +86,40 @@ separation holds across the whole rollout.
 - [ ] `weights_only=False` in `torch.load` inside probe.py — works under
       torch 2.11; leave until it actually warns.
 
+## 4090 (24GB) runtime guidance
+
+Current demo uses ONE shared base model — both agents share weights; the
+differentiation lives in per-agent context + per-agent steering vector.
+This halves memory vs. the earlier two-instance setup.
+
+| Model (bf16) | VRAM | Fits on 4090? | Notes |
+|---|---:|:---:|---|
+| Llama-3.2-1B-Instruct | ~2 GB | yes | our local CPU baseline |
+| Qwen-2.5-3B-Instruct | ~6 GB | yes | plenty of headroom |
+| Qwen-2.5-7B-Instruct | ~14 GB | yes, ~8 GB headroom | Anthropic-paper match |
+| **Llama-3.1-8B-Instruct** | ~16 GB | **yes, ~6 GB headroom** | **recommended default** |
+| Qwen-2.5-14B-Instruct bf16 | ~28 GB | no | use int8 |
+| Qwen-2.5-14B-Instruct int8 | ~14 GB | yes | via bitsandbytes |
+
+Example invocation on the 4090:
+```bash
+python scripts/demo_contagion_sweep.py \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --layer 15 \
+    --turns 20 \
+    --max-new-tokens 192
+    # device + dtype auto-detect to cuda + bf16
+```
+
+Remember to extract vectors for the new model first:
+```bash
+python scripts/extract_vectors.py \
+    --model meta-llama/Llama-3.1-8B-Instruct --layer 15
+```
+
+Layer choice: Llama-3.1-8B has 32 layers; the Anthropic paper and our
+gate-1 sweep suggest mid-to-upper-mid, so layer 14–18.
+
 ## Log (append one line per session, newest at bottom)
 
 - 2026-04-24 — md.md added; starting from `fe7aa78` on
@@ -102,3 +136,12 @@ separation holds across the whole rollout.
   → trajectory logging → HTML report. Stable personality divergence over
   10 turns. Remaining to the "final goal": PPO update loop, Concordia
   integration, 7B replication on GPU, factorial sweep.
+- 2026-04-24 — added sadness + anger to traits.yaml (both pass gate-1
+  0.97/0.98 on Llama-1B). Built `demo_contagion_sweep.py`: 7 conditions
+  (control + joy± + sadness+ + anger+ + curiosity+ + surprise+) producing
+  a drift matrix for bob's emotion projections. Qualitative contagion
+  clearly visible (alice's tone steers the conversation; bob's text
+  adapts); numeric drift at 1 seed × 10 turns too noisy for significance.
+  Refactored both demos to share ONE base model (agents = context +
+  steering config); halves memory and aligns with the eventual
+  LoRA-adapter architecture. Device + dtype auto-detect added.

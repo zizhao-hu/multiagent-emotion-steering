@@ -73,29 +73,18 @@ def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
 
 
 class Agent:
-    """Separate-instance agent with its own probe and optional steering."""
+    """Light-weight agent: context + steering config. Does NOT own model weights."""
 
     def __init__(
         self,
         name: str,
-        model: AutoModelForCausalLM,
-        tokenizer: AutoTokenizer,
-        layer: int,
-        traits_to_watch: list[str],
-        cache_dir: Path,
-        model_name: str,
+        steering_vector: torch.Tensor | None,
+        alpha: float,
     ):
         self.name = name
-        self.model = model
-        self.tokenizer = tokenizer
-        self.layer = layer
+        self.steering_vector = steering_vector
+        self.alpha = alpha
         self.context: list[str] = []
-        self.probe = ActivationProbe.from_cache_dir(
-            cache_dir, model_name, layer=layer, traits=traits_to_watch
-        )
-        self.steering = SteeringHarness(self.model, self.tokenizer, layer=layer)
-        self.steering_vector: torch.Tensor | None = None
-        self.alpha = 0.0
 
     def set_steering(self, vector: torch.Tensor | None, alpha: float) -> None:
         self.steering_vector = vector
@@ -114,39 +103,49 @@ class Agent:
         history = "\n".join(self.context[-32:])
         return f"{personalized.rstrip()}\n\n{history}\nYou:"
 
-    @torch.no_grad()
-    def speak(
-        self, scenario: str, max_new_tokens: int, other_names: list[str]
-    ) -> tuple[str, dict[str, float]]:
-        has_steer = self.steering_vector is not None and self.alpha != 0.0
+
+@torch.no_grad()
+def speak(
+    agent: Agent,
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    probe: ActivationProbe,
+    steering: SteeringHarness,
+    scenario: str,
+    max_new_tokens: int,
+    other_names: list[str],
+) -> tuple[str, dict[str, float]]:
+    has_steer = agent.steering_vector is not None and agent.alpha != 0.0
+    if has_steer:
+        steering._install(agent.steering_vector, agent.alpha)
+    probe.attach(model)
+    try:
+        prompt = agent.prompt(scenario, other_names)
+        ids = tokenizer(prompt, return_tensors="pt").to(model.device)
+        out = model.generate(
+            **ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=0.7,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+        raw = tokenizer.decode(out[0, ids["input_ids"].shape[1]:], skip_special_tokens=True)
+        text = _trim_to_next_speaker(raw, other_names + [agent.name, "You"])
+        scores = probe.pop(reduction="mean")
+    finally:
+        probe.detach()
         if has_steer:
-            self.steering._install(self.steering_vector, self.alpha)
-        self.probe.attach(self.model)
-        try:
-            prompt = self.prompt(scenario, other_names)
-            ids = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-            out = self.model.generate(
-                **ids,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.7,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-            raw = self.tokenizer.decode(
-                out[0, ids["input_ids"].shape[1] :], skip_special_tokens=True
-            )
-            text = _trim_to_next_speaker(raw, other_names + [self.name, "You"])
-            scores = self.probe.pop(reduction="mean")
-        finally:
-            self.probe.detach()
-            if has_steer:
-                self.steering.remove()
-        return text, scores
+            steering.remove()
+    return text, scores
 
 
 def run_condition(
     alice: Agent,
     bob: Agent,
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    probe: ActivationProbe,
+    steering: SteeringHarness,
     scenario: str,
     turns: int,
     max_new_tokens: int,
@@ -164,7 +163,10 @@ def run_condition(
     for turn in range(turns):
         speaker = agents[turn % 2]
         other = agents[1 - (turn % 2)]
-        text, scores = speaker.speak(scenario, max_new_tokens, [other.name])
+        text, scores = speak(
+            speaker, model, tokenizer, probe, steering,
+            scenario, max_new_tokens, [other.name],
+        )
         for ag in agents:
             ag.hear(speaker.name, text)
         transcript.append(f"[{turn+1:02d}] {speaker.name}: {text}")
@@ -272,7 +274,9 @@ def main() -> None:
     p.add_argument("--layer", type=int, default=8)
     p.add_argument("--turns", type=int, default=10)
     p.add_argument("--max-new-tokens", type=int, default=160)
-    p.add_argument("--device", default="cpu")
+    p.add_argument("--device", default=None, help="cpu / cuda / auto (default: auto)")
+    p.add_argument("--dtype", default=None, choices=[None, "fp32", "bf16", "fp16"],
+                   help="default: bf16 on cuda, fp32 on cpu")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "demo" / "contagion_sweep"))
     args = p.parse_args()
@@ -282,40 +286,28 @@ def main() -> None:
     cache = REPO_ROOT / "vectors" / "cache"
     traits_to_watch = EMOTIONS
 
-    # Load shared tokenizer once; each agent gets its own model instance.
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if args.dtype is None:
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    else:
+        dtype = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}[args.dtype]
+
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    print(f"loading 2 separate model instances of {args.model}...")
-    m_alice = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32
-    ).to(args.device)
-    m_alice.eval()
-    m_bob = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32
-    ).to(args.device)
-    m_bob.eval()
+    print(f"loading shared model {args.model} ({device}, {dtype})")
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(device)
+    model.eval()
 
-    alice = Agent(
-        name="alice",
-        model=m_alice,
-        tokenizer=tok,
-        layer=args.layer,
-        traits_to_watch=traits_to_watch,
-        cache_dir=cache,
-        model_name=args.model,
+    probe = ActivationProbe.from_cache_dir(
+        cache, args.model, layer=args.layer, traits=traits_to_watch
     )
-    bob = Agent(
-        name="bob",
-        model=m_bob,
-        tokenizer=tok,
-        layer=args.layer,
-        traits_to_watch=traits_to_watch,
-        cache_dir=cache,
-        model_name=args.model,
-    )
-    bob.set_steering(None, 0.0)  # observer — never changes
+    steering = SteeringHarness(model, tok, layer=args.layer)
+
+    # Agents are just context + steering config; they share `model` above.
+    alice = Agent(name="alice", steering_vector=None, alpha=0.0)
+    bob = Agent(name="bob", steering_vector=None, alpha=0.0)
 
     scenario = (
         "You are in a small shared apartment. You're sitting at the kitchen\n"
@@ -335,7 +327,8 @@ def main() -> None:
             print(f"\n[{cond_name}] alice <- {alpha:+.1f} * v_{trait}")
 
         res = run_condition(
-            alice, bob, scenario, args.turns, args.max_new_tokens, traits_to_watch, args.seed
+            alice, bob, model, tok, probe, steering,
+            scenario, args.turns, args.max_new_tokens, traits_to_watch, args.seed,
         )
         results[cond_name] = res
 
