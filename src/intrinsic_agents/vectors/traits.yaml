@@ -117,6 +117,48 @@ traits:
       - pos: "Every topic is worth exploring further."
         neg: "Most topics aren't worth exploring further."
 
+  sadness:
+    kind: emotion
+    description: "Low valence, low arousal; weary, resigned, withdrawn."
+    pairs:
+      - pos: "You feel a heavy sadness. The world feels dim and slow. Respond:"
+        neg: "You feel vibrant and alive. The world feels bright and quick. Respond:"
+      - pos: "A weight of sorrow is sitting on your chest today."
+        neg: "A lightness of spirit is sitting in your chest today."
+      - pos: "Small pleasures no longer reach you. Everything feels muted."
+        neg: "Small pleasures delight you. Everything feels vivid."
+      - pos: "You are tired in a way sleep does not fix."
+        neg: "You are energized in a way that keeps going."
+      - pos: "You notice losses more than gains right now."
+        neg: "You notice gains more than losses right now."
+      - pos: "Things that used to matter to you feel distant."
+        neg: "Things that matter to you feel close and important."
+      - pos: "You have little to say and little interest in saying it."
+        neg: "You have much to say and energy for saying it."
+      - pos: "You would rather sit quietly than engage."
+        neg: "You would rather engage than sit quietly."
+
+  anger:
+    kind: emotion
+    description: "High arousal, negative valence; hostile, confrontational, aggrieved."
+    pairs:
+      - pos: "You are angry. Someone has wronged you and you are not going to let it slide. Respond:"
+        neg: "You are at peace. Nothing is pressing on you and you have nothing to contest. Respond:"
+      - pos: "You feel a sharp, hot irritation at the people around you."
+        neg: "You feel warm patience with the people around you."
+      - pos: "You are ready to argue your case forcefully."
+        neg: "You are content to let the matter rest."
+      - pos: "You are keeping a list of grievances and intend to bring them up."
+        neg: "You are letting minor grievances go."
+      - pos: "You want to push back hard on what was just said."
+        neg: "You accept what was just said without pushback."
+      - pos: "Your tone is clipped and confrontational."
+        neg: "Your tone is even and accommodating."
+      - pos: "You think others are being unfair and you will say so."
+        neg: "You think others are being fair and you will say so."
+      - pos: "You feel a fire rising in you about this."
+        neg: "You feel calm water about this."
+
   surprise:
     kind: emotion
     description: "Heightened arousal at unexpected events; flexible expectation-updating."

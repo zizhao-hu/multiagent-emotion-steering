@@ -1,0 +1,366 @@
+"""Contagion sweep — one emotion at a time, control included.
+
+For each condition we run a fresh 10-turn rollout between alice (the source
+— steered toward ONE emotion with signed alpha) and bob (the observer — no
+steering on his residual stream). Per turn we probe BOTH agents on ALL
+emotion traits, so we can see how bob's emotion projections drift when
+alice is pushed in each direction, vs. a no-steering control baseline.
+
+Output:
+    runs/demo/contagion_sweep/
+      results.json           per-condition per-agent per-trait trajectories
+      report.html            overview page with drift table + trait plots
+      transcripts/<cond>.txt each condition's dialogue
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from pathlib import Path
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from intrinsic_agents.vectors.probe import ActivationProbe
+from intrinsic_agents.vectors.steering import SteeringHarness
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+EMOTIONS = ["joy", "sadness", "anger", "curiosity", "surprise"]
+
+# (name, trait, alpha). alpha=0 + trait=None is the control.
+CONDITIONS = [
+    ("control",      None,        0.0),
+    ("joy+",         "joy",      +2.0),
+    ("joy-",         "joy",      -2.0),
+    ("sadness+",     "sadness",  +2.0),
+    ("anger+",       "anger",    +2.0),
+    ("curiosity+",   "curiosity", +2.0),
+    ("surprise+",    "surprise", +2.0),
+]
+
+
+def load_vector(cache_dir: Path, model: str, trait: str, layer: int) -> torch.Tensor:
+    safe = model.replace("/", "_")
+    blob = torch.load(
+        cache_dir / f"{safe}_{trait}_layer{layer}.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    return blob["vector"]
+
+
+def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
+    text = text.lstrip()
+    lead = re.match(
+        r"^\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if lead:
+        text = text[lead.end():]
+    patterns = [
+        r"\n\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
+        r"\n\s*[A-Z][A-Za-z]{2,20}\s*:",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE if pat == patterns[0] else 0)
+        if m:
+            text = text[: m.start()]
+    return text.strip()
+
+
+class Agent:
+    """Separate-instance agent with its own probe and optional steering."""
+
+    def __init__(
+        self,
+        name: str,
+        model: AutoModelForCausalLM,
+        tokenizer: AutoTokenizer,
+        layer: int,
+        traits_to_watch: list[str],
+        cache_dir: Path,
+        model_name: str,
+    ):
+        self.name = name
+        self.model = model
+        self.tokenizer = tokenizer
+        self.layer = layer
+        self.context: list[str] = []
+        self.probe = ActivationProbe.from_cache_dir(
+            cache_dir, model_name, layer=layer, traits=traits_to_watch
+        )
+        self.steering = SteeringHarness(self.model, self.tokenizer, layer=layer)
+        self.steering_vector: torch.Tensor | None = None
+        self.alpha = 0.0
+
+    def set_steering(self, vector: torch.Tensor | None, alpha: float) -> None:
+        self.steering_vector = vector
+        self.alpha = alpha
+
+    def clear_context(self) -> None:
+        self.context = []
+
+    def hear(self, speaker: str, utterance: str) -> None:
+        tag = "You" if speaker == self.name else speaker
+        self.context.append(f"{tag}: {utterance}")
+
+    def prompt(self, scenario: str, other_names: list[str]) -> str:
+        other = ", ".join(other_names) if other_names else "your housemate"
+        personalized = scenario.replace("{other}", other)
+        history = "\n".join(self.context[-32:])
+        return f"{personalized.rstrip()}\n\n{history}\nYou:"
+
+    @torch.no_grad()
+    def speak(
+        self, scenario: str, max_new_tokens: int, other_names: list[str]
+    ) -> tuple[str, dict[str, float]]:
+        has_steer = self.steering_vector is not None and self.alpha != 0.0
+        if has_steer:
+            self.steering._install(self.steering_vector, self.alpha)
+        self.probe.attach(self.model)
+        try:
+            prompt = self.prompt(scenario, other_names)
+            ids = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+            out = self.model.generate(
+                **ids,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.tokenizer.pad_token_id,
+            )
+            raw = self.tokenizer.decode(
+                out[0, ids["input_ids"].shape[1] :], skip_special_tokens=True
+            )
+            text = _trim_to_next_speaker(raw, other_names + [self.name, "You"])
+            scores = self.probe.pop(reduction="mean")
+        finally:
+            self.probe.detach()
+            if has_steer:
+                self.steering.remove()
+        return text, scores
+
+
+def run_condition(
+    alice: Agent,
+    bob: Agent,
+    scenario: str,
+    turns: int,
+    max_new_tokens: int,
+    traits_to_watch: list[str],
+    seed: int,
+) -> dict:
+    torch.manual_seed(seed)
+    alice.clear_context()
+    bob.clear_context()
+    transcript: list[str] = []
+    traj: dict[str, dict[str, list[float]]] = {
+        a.name: {t: [] for t in traits_to_watch} for a in (alice, bob)
+    }
+    agents = [alice, bob]
+    for turn in range(turns):
+        speaker = agents[turn % 2]
+        other = agents[1 - (turn % 2)]
+        text, scores = speaker.speak(scenario, max_new_tokens, [other.name])
+        for ag in agents:
+            ag.hear(speaker.name, text)
+        transcript.append(f"[{turn+1:02d}] {speaker.name}: {text}")
+        for t in traits_to_watch:
+            traj[speaker.name][t].append(scores.get(t, 0.0))
+    return {"transcript": transcript, "trajectories": traj}
+
+
+def drift(traj: list[float]) -> float:
+    """End-minus-start trait projection shift."""
+    if len(traj) < 2:
+        return 0.0
+    return traj[-1] - traj[0]
+
+
+def mean(xs: list[float]) -> float:
+    return sum(xs) / max(len(xs), 1)
+
+
+def render_html(results: dict, out_path: Path, meta: dict) -> None:
+    conds = list(results.keys())
+    html = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        "<title>contagion sweep</title>",
+        "<style>",
+        "body{font-family:Charter,Georgia,serif;max-width:1080px;margin:2em auto;padding:0 1em;color:#1a1a1a;background:#fafaf7}",
+        "h1,h2,h3{letter-spacing:-0.01em}h2{color:#5c6370;font-size:1em;text-transform:uppercase;letter-spacing:0.08em;margin-top:1.5em}",
+        "table{border-collapse:collapse;font-family:ui-monospace,Menlo,monospace;font-size:0.85em;margin:0.4em 0}",
+        "td,th{border:1px solid #e4e4e0;padding:0.35em 0.7em;text-align:right}",
+        "th{background:#f0efe8;text-align:center}",
+        "td.label{text-align:left;font-weight:bold}",
+        "td.pos{background:#fff3e5;color:#c2410c}",
+        "td.neg{background:#e6f0f8;color:#0369a1}",
+        "td.strong-pos{background:#ffe5cc;color:#92310a;font-weight:bold}",
+        "td.strong-neg{background:#d5e6f3;color:#0b4f75;font-weight:bold}",
+        "details{background:#fff;border:1px solid #e4e4e0;border-radius:6px;margin:0.3em 0;padding:0.4em 0.8em}",
+        "details pre{font-size:0.8em;white-space:pre-wrap}",
+        ".caption{color:#5c6370;font-size:0.85em}",
+        "</style></head><body>",
+    ]
+    html.append("<h1>Persona contagion sweep</h1>")
+    html.append(
+        f"<p class='caption'>{meta['model']} · layer {meta['layer']} · "
+        f"{meta['turns']} turns per condition · seed {meta['seed']} · CPU · "
+        "alice steered toward one emotion, bob passive observer.</p>"
+    )
+
+    # Drift matrix: rows = condition, cols = bob's trait drift
+    traits = meta["traits"]
+    html.append("<h2>Bob's trait drift (end − start projection)</h2>")
+    html.append("<table>")
+    html.append("<tr><th>condition</th>" + "".join(f"<th>s_{t}</th>" for t in traits) + "</tr>")
+    for cond in conds:
+        row = [f"<td class='label'>{cond}</td>"]
+        for t in traits:
+            d = drift(results[cond]["trajectories"]["bob"][t])
+            cls = ""
+            mag = abs(d)
+            if mag > 0.25:
+                cls = "strong-pos" if d > 0 else "strong-neg"
+            elif mag > 0.05:
+                cls = "pos" if d > 0 else "neg"
+            row.append(f"<td class='{cls}'>{d:+.2f}</td>")
+        html.append("<tr>" + "".join(row) + "</tr>")
+    html.append("</table>")
+    html.append(
+        "<p class='caption'>Each cell is (bob's projection at last turn − bob's projection at first turn). "
+        "Positive drift means bob's residual-stream moved toward that trait; negative means away. "
+        "The <b>control</b> row shows baseline drift with no steering on alice's side.</p>"
+    )
+
+    # Alice's own trajectory too (sanity check — she should track her injected direction)
+    html.append("<h2>Alice's trait drift (sanity check — she should saturate where steered)</h2>")
+    html.append("<table>")
+    html.append("<tr><th>condition</th>" + "".join(f"<th>s_{t}</th>" for t in traits) + "</tr>")
+    for cond in conds:
+        row = [f"<td class='label'>{cond}</td>"]
+        for t in traits:
+            # alice's mean projection over the whole run
+            vals = results[cond]["trajectories"]["alice"][t]
+            m = mean(vals)
+            cls = ""
+            if abs(m) > 0.5:
+                cls = "strong-pos" if m > 0 else "strong-neg"
+            elif abs(m) > 0.15:
+                cls = "pos" if m > 0 else "neg"
+            row.append(f"<td class='{cls}'>{m:+.2f}</td>")
+        html.append("<tr>" + "".join(row) + "</tr>")
+    html.append("</table>")
+
+    # Per-condition transcripts
+    html.append("<h2>transcripts (click to expand)</h2>")
+    for cond in conds:
+        html.append(f"<details><summary>{cond}</summary><pre>")
+        html.extend(results[cond]["transcript"])
+        html.append("</pre></details>")
+
+    html.append("</body></html>")
+    out_path.write_text("\n".join(html), encoding="utf-8")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--model", default="meta-llama/Llama-3.2-1B-Instruct")
+    p.add_argument("--layer", type=int, default=8)
+    p.add_argument("--turns", type=int, default=10)
+    p.add_argument("--max-new-tokens", type=int, default=160)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "demo" / "contagion_sweep"))
+    args = p.parse_args()
+
+    out_dir = Path(args.out_dir)
+    (out_dir / "transcripts").mkdir(parents=True, exist_ok=True)
+    cache = REPO_ROOT / "vectors" / "cache"
+    traits_to_watch = EMOTIONS
+
+    # Load shared tokenizer once; each agent gets its own model instance.
+    tok = AutoTokenizer.from_pretrained(args.model)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    print(f"loading 2 separate model instances of {args.model}...")
+    m_alice = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=torch.float32
+    ).to(args.device)
+    m_alice.eval()
+    m_bob = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=torch.float32
+    ).to(args.device)
+    m_bob.eval()
+
+    alice = Agent(
+        name="alice",
+        model=m_alice,
+        tokenizer=tok,
+        layer=args.layer,
+        traits_to_watch=traits_to_watch,
+        cache_dir=cache,
+        model_name=args.model,
+    )
+    bob = Agent(
+        name="bob",
+        model=m_bob,
+        tokenizer=tok,
+        layer=args.layer,
+        traits_to_watch=traits_to_watch,
+        cache_dir=cache,
+        model_name=args.model,
+    )
+    bob.set_steering(None, 0.0)  # observer — never changes
+
+    scenario = (
+        "You are in a small shared apartment. You're sitting at the kitchen\n"
+        "table with {other}. The electric kettle just stopped working — the\n"
+        "indicator light is dead. Talk about what happened and what to do\n"
+        "next. Respond in one short conversational turn. Stay on topic."
+    )
+
+    results: dict = {}
+    for cond_name, trait, alpha in CONDITIONS:
+        if trait is None:
+            alice.set_steering(None, 0.0)
+            print(f"\n[{cond_name}] alice = NO steering (control)")
+        else:
+            v = load_vector(cache, args.model, trait, args.layer)
+            alice.set_steering(v, alpha)
+            print(f"\n[{cond_name}] alice <- {alpha:+.1f} * v_{trait}")
+
+        res = run_condition(
+            alice, bob, scenario, args.turns, args.max_new_tokens, traits_to_watch, args.seed
+        )
+        results[cond_name] = res
+
+        (out_dir / "transcripts" / f"{cond_name}.txt").write_text(
+            "\n".join(res["transcript"]) + "\n", encoding="utf-8"
+        )
+
+        # Live-print bob's drift on each emotion for this condition.
+        drifts = {t: drift(res["trajectories"]["bob"][t]) for t in traits_to_watch}
+        print("  bob drift: " + " ".join(f"{t}={drifts[t]:+.2f}" for t in traits_to_watch))
+
+    (out_dir / "results.json").write_text(json.dumps(results, indent=2))
+    render_html(
+        results,
+        out_dir / "report.html",
+        meta={
+            "model": args.model,
+            "layer": args.layer,
+            "turns": args.turns,
+            "seed": args.seed,
+            "traits": traits_to_watch,
+        },
+    )
+    print(f"\nWrote {out_dir}/report.html, results.json, transcripts/")
+
+
+if __name__ == "__main__":
+    main()

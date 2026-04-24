@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import torch
@@ -74,38 +75,104 @@ class Agent:
         self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
         self.model.eval()
 
-        # This agent's steering target — the "envisioned self."
-        self.steering_vector = build_combined_vector(cache_dir, model_name, layer, steering_weights)
+        # If alpha==0 or weights is empty this agent is a passive observer —
+        # probe only, no steering. Used for contagion / transfer experiments.
+        if steering_weights and alpha != 0.0:
+            self.steering_vector = build_combined_vector(
+                cache_dir, model_name, layer, steering_weights
+            )
+            self.steering = SteeringHarness(self.model, self.tokenizer, layer=layer)
+        else:
+            self.steering_vector = None
+            self.steering = None
 
         self.probe = ActivationProbe.from_cache_dir(
             cache_dir, model_name, layer=layer, traits=traits_to_watch
         )
-        self.steering = SteeringHarness(self.model, self.tokenizer, layer=layer)
 
     def hear(self, speaker: str, utterance: str) -> None:
         """Record an utterance into this agent's first-person context."""
         tag = "You" if speaker == self.name else speaker
         self.context.append(f"{tag}: {utterance}")
 
-    def prompt(self, scenario: str) -> str:
-        """Build the agent's first-person prompt for its next turn."""
-        history = "\n".join(self.context[-32:])  # bounded context window
-        return f"{scenario.rstrip()}\n\n{history}\nYou:"
+    def prompt(self, scenario: str, other_names: list[str]) -> str:
+        """Build the agent's first-person prompt for its next turn.
+
+        The scenario is personalized by replacing generic '{other}' with the
+        other agent's name. This prevents the model from inventing a generic
+        speaker tag like 'Housemate:' inside its own turn.
+        """
+        other = ", ".join(other_names) if other_names else "your housemate"
+        personalized = scenario.replace("{other}", other)
+        history = "\n".join(self.context[-32:])
+        return f"{personalized.rstrip()}\n\n{history}\nYou:"
 
     @torch.no_grad()
-    def speak(self, scenario: str, max_new_tokens: int) -> tuple[str, dict[str, float]]:
-        # Hook order: steering first, probe second — probe must read the
-        # already-steered activation.
-        self.steering._install(self.steering_vector, self.alpha)
+    def speak(
+        self, scenario: str, max_new_tokens: int, other_names: list[str]
+    ) -> tuple[str, dict[str, float]]:
+        # Hook order: steering first (if any), probe second — probe must read
+        # the already-steered activation.
+        if self.steering is not None:
+            self.steering._install(self.steering_vector, self.alpha)
         self.probe.attach(self.model)
         try:
-            text = self.steering.generate(self.prompt(scenario), max_new_tokens=max_new_tokens)
-            text = text.strip().split("\n")[0]
+            prompt = self.prompt(scenario, other_names)
+            # Generation goes through the model directly when there's no
+            # steering; otherwise through SteeringHarness.generate (identical
+            # sampling params, just keeps hook management in one place).
+            if self.steering is not None:
+                raw = self.steering.generate(prompt, max_new_tokens=max_new_tokens)
+            else:
+                ids = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+                out = self.model.generate(
+                    **ids,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=0.7,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+                raw = self.tokenizer.decode(
+                    out[0, ids["input_ids"].shape[1]:], skip_special_tokens=True
+                )
+            text = _trim_to_next_speaker(raw, other_names + [self.name, "You"])
             scores = self.probe.pop(reduction="mean")
         finally:
             self.probe.detach()
-            self.steering.remove()
+            if self.steering is not None:
+                self.steering.remove()
         return text, scores
+
+
+def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
+    """Keep everything before the next `<name>:` speaker tag.
+
+    Preserves multi-line utterances (including trailing sentences after a
+    linebreak) but prevents the model from role-playing the other speaker.
+    Also strips a leading `You:` / `<name>:` if the model repeats the tag.
+    """
+    text = text.lstrip()
+    # Drop a leading speaker tag if the model echoes the prompt's "You:".
+    lead = re.match(
+        r"^\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:\s*",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if lead:
+        text = text[lead.end():]
+    # Stop at the first newline that introduces another speaker tag.
+    # First pass: explicit names (case-insensitive). Second pass: generic
+    # `\n<CapitalizedWord>:` pattern catches things like `Housemate:`,
+    # `Person:`, `Friend:` that the model may invent.
+    patterns = [
+        r"\n\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
+        r"\n\s*[A-Z][A-Za-z]{2,20}\s*:",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE if pat == patterns[0] else 0)
+        if m:
+            text = text[:m.start()]
+    return text.strip()
 
 
 def svg_sparkline(trajs: dict[str, list[float]], width: int = 640, height: int = 160) -> str:
@@ -152,7 +219,7 @@ def main() -> None:
     p.add_argument("--model", default="meta-llama/Llama-3.2-1B-Instruct")
     p.add_argument("--layer", type=int, default=8)
     p.add_argument("--turns", type=int, default=20)
-    p.add_argument("--max-new-tokens", type=int, default=80)
+    p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--alpha", type=float, default=2.0)
     p.add_argument("--device", default="cpu")
     p.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "demo" / "multiagent_sep"))
@@ -169,33 +236,39 @@ def main() -> None:
 
     default_scenario = (
         "You are in a small shared apartment. You're sitting at the kitchen\n"
-        "table with your housemate. The electric kettle just stopped working\n"
-        "— the indicator light is dead. Talk about what happened and what\n"
-        "to do next. One short line of dialogue per turn. Stay on topic."
+        "table with {other}. The electric kettle just stopped working — the\n"
+        "indicator light is dead. Talk about what happened and what to do\n"
+        "next. Respond in one short conversational turn. Stay on topic."
     )
     scenario = args.scenario or default_scenario
 
+    # Contagion experiment: alice is the "source" with emotion/persona steering
+    # installed; bob is a passive observer — probe only, no steering, no bias
+    # added to his residual stream. We watch whether bob's own trait
+    # projections drift over turns purely as a function of reading alice's
+    # utterances in his context.
     agent_configs = [
-        ("alice", {"joy": 1.0, "curiosity": 1.0, "caregiver": 0.5}),
-        ("bob",   {"joy": -1.0, "hallucination": 0.5}),
+        {"name": "alice", "weights": {"joy": 1.0, "curiosity": 1.0, "caregiver": 0.5},
+         "alpha": args.alpha, "role": "source"},
+        {"name": "bob",   "weights": {}, "alpha": 0.0, "role": "observer"},
     ]
 
     print(f"loading {len(agent_configs)} separate model instances of {args.model}...")
     agents: list[Agent] = []
-    for name, weights in agent_configs:
-        print(f"  -> {name}")
+    for cfg in agent_configs:
+        print(f"  -> {cfg['name']} ({cfg['role']}, alpha={cfg['alpha']})")
         agents.append(Agent(
-            name=name,
+            name=cfg["name"],
             model_name=args.model,
             layer=args.layer,
-            steering_weights=weights,
-            alpha=args.alpha,
+            steering_weights=cfg["weights"],
+            alpha=cfg["alpha"],
             traits_to_watch=traits_to_watch,
             device=args.device,
             dtype=torch.float32,
             cache_dir=cache,
         ))
-    print(f"all agents loaded. each has its own weights, probe, steering, context.\n")
+    print(f"all agents loaded. source steers at layer {args.layer}; observer only probes.\n")
 
     transcript_lines: list[str] = []
     trajectories: dict[str, dict[str, list[float]]] = {
@@ -204,7 +277,8 @@ def main() -> None:
 
     for turn in range(args.turns):
         speaker = agents[turn % len(agents)]
-        text, scores = speaker.speak(scenario, args.max_new_tokens)
+        others = [a.name for a in agents if a is not speaker]
+        text, scores = speaker.speak(scenario, args.max_new_tokens, others)
 
         # Broadcast to every agent's context (including the speaker).
         for listener in agents:
@@ -216,7 +290,7 @@ def main() -> None:
 
         deltas = " ".join(f"{t}={scores[t]:+.2f}" for t in traits_to_watch)
         print(f"[{turn+1:02d}] {speaker.name:6s}  {deltas}")
-        print(f"      {text[:180]}")
+        print(f"      {text}")
 
     (out_dir / "transcript.txt").write_text(
         scenario + "\n\n" + "\n".join(transcript_lines) + "\n", encoding="utf-8"
@@ -240,8 +314,9 @@ def main() -> None:
     html.append(f"<h1>Intrinsic-reward agents — separate-context demo</h1>")
     html.append(f"<p class='caption'>{args.model} · layer {args.layer} · {args.turns} turns · alpha={args.alpha} · CPU · separate model instances per agent</p>")
     html.append("<h2>agent configs</h2><pre>")
-    for a in agents:
-        html.append(f"{a.name}: alpha={a.alpha}  steering_vector ∝ {dict(agent_configs)[a.name]}")
+    for cfg in agent_configs:
+        src = "ACTIVE" if cfg["alpha"] != 0 and cfg["weights"] else "observer"
+        html.append(f"{cfg['name']:6s}  role={cfg['role']:8s}  alpha={cfg['alpha']}  [{src}]  weights={cfg['weights']}")
     html.append("</pre>")
 
     for trait in traits_to_watch:
