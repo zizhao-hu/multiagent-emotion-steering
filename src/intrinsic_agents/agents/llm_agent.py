@@ -31,7 +31,7 @@ class LLMAgent:
         tok = AutoTokenizer.from_pretrained(model_name)
         if tok.pad_token is None:
             tok.pad_token = tok.eos_token
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
         probe = ActivationProbe.from_cache_dir(cache_dir, model_name, layer=layer)
         probe.attach(model)
         return cls(name=name, model=model, tokenizer=tok, probe=probe)

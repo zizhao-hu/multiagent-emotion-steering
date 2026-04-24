@@ -90,7 +90,7 @@ def extract_all(
     tok = AutoTokenizer.from_pretrained(model_name)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float32).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32).to(device)
     model.eval()
 
     if layer is None:

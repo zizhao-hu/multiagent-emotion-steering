@@ -37,7 +37,7 @@ def tiny():
     tok = AutoTokenizer.from_pretrained(TINY_MODEL)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(TINY_MODEL, torch_dtype=torch.float32)
+    model = AutoModelForCausalLM.from_pretrained(TINY_MODEL, dtype=torch.float32)
     model.eval()
     return model, tok
 
