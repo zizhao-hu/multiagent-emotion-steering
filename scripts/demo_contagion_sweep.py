@@ -199,9 +199,9 @@ def heatmap_svg(
     cols: list[str],
     values: list[list[float]],
     title: str = "",
-    cell_size: int = 64,
-    label_left_w: int = 130,
-    label_top_h: int = 60,
+    cell_size: int = 22,
+    label_left_w: int = 56,
+    label_top_h: int = 20,
 ) -> str:
     """Square-cell heatmap. Continuous orange (negative) → blue (positive)."""
     if not rows or not cols:
@@ -210,8 +210,8 @@ def heatmap_svg(
     vmax = max(abs(v) for v in flat) or 1.0
     n_rows = len(rows)
     n_cols = len(cols)
-    width = label_left_w + n_cols * cell_size + 20
-    height = label_top_h + n_rows * cell_size + 20
+    width = label_left_w + n_cols * cell_size + 12
+    height = label_top_h + n_rows * cell_size + 32
 
     def color(v: float) -> str:
         # Symmetric scale: -vmax → orange (#c2410c), 0 → off-white, +vmax → blue (#0369a1)
@@ -228,28 +228,26 @@ def heatmap_svg(
         return f"rgb({r},{g},{b})"
 
     def text_color(v: float) -> str:
-        # White text once cell color gets dark enough
         return "#fff" if abs(v) / vmax > 0.55 else "#1a1a1a"
 
     svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'font-family="ui-monospace,Menlo,monospace" font-size="11">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'font-family="ui-monospace,Menlo,monospace" font-size="7">'
     ]
     if title:
-        svg.append(f'<text x="{label_left_w}" y="14" font-size="12" fill="#5c6370">{title}</text>')
-    # column labels
+        svg.append(f'<text x="{label_left_w}" y="8" font-size="7" fill="#5c6370">{title}</text>')
     for j, c in enumerate(cols):
         cx = label_left_w + j * cell_size + cell_size / 2
         svg.append(
-            f'<text x="{cx}" y="{label_top_h - 8}" text-anchor="middle" '
-            f'fill="#1a1a1a" font-weight="600">{c}</text>'
+            f'<text x="{cx}" y="{label_top_h - 4}" text-anchor="middle" '
+            f'fill="#1a1a1a" font-size="7" font-weight="600">{c}</text>'
         )
-    # row labels + cells
     for i, r in enumerate(rows):
         cy = label_top_h + i * cell_size + cell_size / 2
         svg.append(
-            f'<text x="{label_left_w - 8}" y="{cy + 4}" text-anchor="end" '
-            f'fill="#1a1a1a" font-weight="600">{r}</text>'
+            f'<text x="{label_left_w - 4}" y="{cy + 2}" text-anchor="end" '
+            f'fill="#1a1a1a" font-size="7" font-weight="600">{r}</text>'
         )
         for j in range(len(cols)):
             v = values[i][j]
@@ -257,15 +255,13 @@ def heatmap_svg(
             y = label_top_h + i * cell_size
             svg.append(
                 f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" '
-                f'fill="{color(v)}" stroke="#fff" stroke-width="1"/>'
+                f'fill="{color(v)}" stroke="#fff" stroke-width="0.5"/>'
             )
-            svg.append(
-                f'<text x="{x + cell_size/2}" y="{y + cell_size/2 + 4}" '
-                f'text-anchor="middle" fill="{text_color(v)}">{v:+.2f}</text>'
-            )
-    # legend
-    leg_y = label_top_h + n_rows * cell_size + 6
-    leg_w = 240
+            # No in-cell numbers at this size — color carries the value.
+            # Hover-tooltip via <title> instead.
+            svg.append(f'<title>{v:+.3f}</title>')
+    leg_y = label_top_h + n_rows * cell_size + 4
+    leg_w = min(120, n_cols * cell_size)
     leg_x = label_left_w
     grad_id = f"grad_{id(values)}"
     svg.append(
@@ -275,16 +271,14 @@ def heatmap_svg(
         f'<stop offset="1" stop-color="rgb(3,105,161)"/></linearGradient></defs>'
     )
     svg.append(
-        f'<rect x="{leg_x}" y="{leg_y}" width="{leg_w}" height="8" fill="url(#{grad_id})" '
+        f'<rect x="{leg_x}" y="{leg_y}" width="{leg_w}" height="4" fill="url(#{grad_id})" '
         f'stroke="#ccc" stroke-width="0.5"/>'
     )
-    svg.append(f'<text x="{leg_x}" y="{leg_y + 22}" font-size="10" fill="#5c6370">{-vmax:+.2f}</text>')
+    svg.append(f'<text x="{leg_x}" y="{leg_y + 12}" font-size="6" fill="#5c6370">{-vmax:+.2f}</text>')
     svg.append(
-        f'<text x="{leg_x + leg_w}" y="{leg_y + 22}" font-size="10" fill="#5c6370" '
+        f'<text x="{leg_x + leg_w}" y="{leg_y + 12}" font-size="6" fill="#5c6370" '
         f'text-anchor="end">{+vmax:+.2f}</text>'
     )
-    svg.append(f'<text x="{leg_x + leg_w/2}" y="{leg_y + 22}" font-size="10" fill="#5c6370" '
-               f'text-anchor="middle">drift (end − start)</text>')
     svg.append("</svg>")
     return "\n".join(svg)
 
@@ -327,9 +321,12 @@ def render_html(results: dict, out_path: Path, meta: dict) -> None:
     html.append(heatmap_svg(rows=conds, cols=traits, values=bob_drift,
                             title="bob — observer (probe only, no steering)"))
     html.append(
-        "<p class='caption'>Each cell is (bob's projection at last turn − bob's projection at first turn). "
-        "Positive drift means bob's residual-stream moved toward that trait; negative means away. "
-        "The <b>control</b> row shows baseline drift with no steering on alice's side.</p>"
+        "<p class='caption'><b>Row</b> = which trait alice was steered toward in that run "
+        "(<b>control</b> = no steering on alice). <b>Column</b> = which trait we measure on "
+        "<b>bob's</b> own residual stream. <b>Cell</b> = bob's projection on that trait at "
+        "the last turn minus the first turn. Bob never has any vector added to his "
+        "activations — any drift you see comes purely from him reading alice's utterances. "
+        "Compare each row against the <b>control</b> row to see what alice's emotion did to bob.</p>"
     )
 
     # Alice's own mean projection (sanity check — she should track her injected direction)
