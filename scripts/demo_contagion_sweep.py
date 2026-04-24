@@ -199,9 +199,9 @@ def heatmap_svg(
     cols: list[str],
     values: list[list[float]],
     title: str = "",
-    cell_size: int = 22,
-    label_left_w: int = 56,
-    label_top_h: int = 20,
+    cell_size: int = 32,
+    label_left_w: int = 60,
+    label_top_h: int = 22,
 ) -> str:
     """Square-cell heatmap. Continuous orange (negative) → blue (positive)."""
     if not rows or not cols:
@@ -255,11 +255,12 @@ def heatmap_svg(
             y = label_top_h + i * cell_size
             svg.append(
                 f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" '
-                f'fill="{color(v)}" stroke="#fff" stroke-width="0.5"/>'
+                f'fill="{color(v)}" stroke="#fff" stroke-width="0.5"><title>{v:+.3f}</title></rect>'
             )
-            # No in-cell numbers at this size — color carries the value.
-            # Hover-tooltip via <title> instead.
-            svg.append(f'<title>{v:+.3f}</title>')
+            svg.append(
+                f'<text x="{x + cell_size/2}" y="{y + cell_size/2 + 2}" '
+                f'text-anchor="middle" fill="{text_color(v)}" font-size="7">{v:+.2f}</text>'
+            )
     leg_y = label_top_h + n_rows * cell_size + 4
     leg_w = min(120, n_cols * cell_size)
     leg_x = label_left_w
@@ -278,6 +279,132 @@ def heatmap_svg(
     svg.append(
         f'<text x="{leg_x + leg_w}" y="{leg_y + 12}" font-size="6" fill="#5c6370" '
         f'text-anchor="end">{+vmax:+.2f}</text>'
+    )
+    svg.append("</svg>")
+    return "\n".join(svg)
+
+
+def trajectory_panel_svg(
+    results: dict,
+    conditions: list[str],
+    emotions: list[str],
+    cell_w: int = 110,
+    cell_h: int = 64,
+    label_left_w: int = 70,
+    label_top_h: int = 22,
+) -> str:
+    """Small-multiples grid: rows = conditions, cols = emotions.
+
+    Each subplot shows alice (orange) and bob (blue) trait projections over
+    turns. Y-axis is shared per-column (per-emotion) so the same trait is on
+    the same scale across conditions — column-wise comparison is meaningful.
+    """
+    if not conditions or not emotions:
+        return ""
+    width = label_left_w + len(emotions) * cell_w + 12
+    height = label_top_h + len(conditions) * cell_h + 28
+
+    # Per-emotion y-range: span across all agents and all conditions for that emotion.
+    y_ranges: dict[str, tuple[float, float]] = {}
+    for e in emotions:
+        all_v = []
+        for cond in conditions:
+            for ag in ("alice", "bob"):
+                all_v.extend(results[cond]["trajectories"][ag][e])
+        if not all_v:
+            y_ranges[e] = (-1.0, 1.0)
+            continue
+        lo, hi = min(all_v), max(all_v)
+        pad = 0.1 * max(hi - lo, 0.1)
+        y_ranges[e] = (lo - pad, hi + pad)
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'font-family="ui-monospace,Menlo,monospace" font-size="7">'
+    ]
+
+    # Column headers
+    for j, e in enumerate(emotions):
+        cx = label_left_w + j * cell_w + cell_w / 2
+        lo, hi = y_ranges[e]
+        svg.append(
+            f'<text x="{cx}" y="{label_top_h - 8}" text-anchor="middle" '
+            f'font-weight="600" fill="#1a1a1a">s_{e}</text>'
+        )
+        svg.append(
+            f'<text x="{cx}" y="{label_top_h - 1}" text-anchor="middle" font-size="6" '
+            f'fill="#5c6370">[{lo:+.2f}, {hi:+.2f}]</text>'
+        )
+
+    # Rows
+    for i, cond in enumerate(conditions):
+        cy_label = label_top_h + i * cell_h + cell_h / 2
+        svg.append(
+            f'<text x="{label_left_w - 6}" y="{cy_label + 2}" text-anchor="end" '
+            f'font-weight="600" fill="#1a1a1a">{cond}</text>'
+        )
+        for j, e in enumerate(emotions):
+            x0 = label_left_w + j * cell_w
+            y0 = label_top_h + i * cell_h
+            inner_w = cell_w - 4
+            inner_h = cell_h - 6
+            ax_x = x0 + 2
+            ax_y = y0 + 3
+            lo, hi = y_ranges[e]
+            span = hi - lo
+
+            # subplot background + frame
+            svg.append(
+                f'<rect x="{ax_x}" y="{ax_y}" width="{inner_w}" height="{inner_h}" '
+                f'fill="#fdfcf8" stroke="#e4e4e0" stroke-width="0.5"/>'
+            )
+            # zero line if range straddles 0
+            if lo < 0 < hi:
+                zy = ax_y + inner_h * (hi - 0) / span
+                svg.append(
+                    f'<line x1="{ax_x}" y1="{zy}" x2="{ax_x + inner_w}" y2="{zy}" '
+                    f'stroke="#ccc" stroke-dasharray="2 2" stroke-width="0.5"/>'
+                )
+
+            for ag, color in (("alice", "#c2410c"), ("bob", "#0369a1")):
+                vals = results[cond]["trajectories"][ag][e]
+                n = len(vals)
+                if n < 1:
+                    continue
+                pts = []
+                for k, v in enumerate(vals):
+                    px = ax_x + (inner_w * k / max(n - 1, 1) if n > 1 else inner_w / 2)
+                    py = ax_y + inner_h * (hi - v) / span
+                    pts.append(f"{px:.1f},{py:.1f}")
+                if n == 1:
+                    px, py = pts[0].split(",")
+                    svg.append(f'<circle cx="{px}" cy="{py}" r="1.5" fill="{color}"/>')
+                else:
+                    svg.append(
+                        f'<polyline fill="none" stroke="{color}" stroke-width="1.2" '
+                        f'points="{" ".join(pts)}"/>'
+                    )
+                    # Endpoint markers
+                    last_px, last_py = pts[-1].split(",")
+                    svg.append(f'<circle cx="{last_px}" cy="{last_py}" r="1.3" fill="{color}"/>')
+
+    # Legend
+    leg_y = label_top_h + len(conditions) * cell_h + 12
+    leg_x = label_left_w
+    svg.append(
+        f'<line x1="{leg_x}" y1="{leg_y}" x2="{leg_x + 14}" y2="{leg_y}" '
+        f'stroke="#c2410c" stroke-width="1.4"/>'
+    )
+    svg.append(f'<text x="{leg_x + 18}" y="{leg_y + 3}" font-size="8" fill="#1a1a1a">alice (steered)</text>')
+    svg.append(
+        f'<line x1="{leg_x + 96}" y1="{leg_y}" x2="{leg_x + 110}" y2="{leg_y}" '
+        f'stroke="#0369a1" stroke-width="1.4"/>'
+    )
+    svg.append(f'<text x="{leg_x + 114}" y="{leg_y + 3}" font-size="8" fill="#1a1a1a">bob (probe-only)</text>')
+    svg.append(
+        f'<text x="{leg_x + 220}" y="{leg_y + 3}" font-size="7" fill="#5c6370">'
+        f'x = turn (each agent speaks every other turn) · y = trait projection</text>'
     )
     svg.append("</svg>")
     return "\n".join(svg)
@@ -337,6 +464,17 @@ def render_html(results: dict, out_path: Path, meta: dict) -> None:
     html.append("<h2>Alice's mean trait projection (sanity check — should saturate where steered)</h2>")
     html.append(heatmap_svg(rows=conds, cols=traits, values=alice_mean,
                             title="alice — source (steered toward one trait per condition)"))
+
+    html.append("<h2>Per-turn trajectories — alice + bob, every condition × emotion</h2>")
+    html.append(trajectory_panel_svg(results, conditions=conds, emotions=traits))
+    html.append(
+        "<p class='caption'>Each subplot is one (condition, emotion) pair. "
+        "<b style='color:#c2410c'>Alice</b> (steered toward the row's trait) is orange; "
+        "<b style='color:#0369a1'>bob</b> (probe-only observer) is blue. "
+        "Each agent speaks on alternate turns, so each line has 5 points per agent across "
+        "10 turns. Y-axis range is shared <i>per emotion</i> so column-wise comparison is "
+        "meaningful: the same trait is on the same scale across all conditions.</p>"
+    )
 
     # Per-condition transcripts
     html.append("<h2>transcripts (click to expand)</h2>")
