@@ -26,7 +26,14 @@ def main() -> None:
     p.add_argument("--traits-yaml", default=str(DEFAULT_TRAITS_YAML))
     p.add_argument("--cache-dir", default=str(DEFAULT_CACHE))
     p.add_argument("--device", default=None)
+    p.add_argument("--dtype", default=None, choices=[None, "fp32", "bf16", "fp16"],
+                   help="default: bf16 on cuda, fp32 on cpu (bf16 is enough for diff-of-means)")
     args = p.parse_args()
+
+    dtype = None
+    if args.dtype is not None:
+        import torch as _t
+        dtype = {"fp32": _t.float32, "bf16": _t.bfloat16, "fp16": _t.float16}[args.dtype]
 
     written = extract_all(
         model_name=args.model,
@@ -35,6 +42,7 @@ def main() -> None:
         layer=args.layer,
         device=args.device,
         selected=args.traits,
+        dtype=dtype,
     )
     for name, path in written.items():
         print(f"  {name:16s} -> {path}")

@@ -54,6 +54,7 @@ def load_vector(cache_dir: Path, model: str, trait: str, layer: int) -> torch.Te
 
 def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
     text = text.lstrip()
+    # Drop a leading speaker tag if the model echoes the prompt's "You:".
     lead = re.match(
         r"^\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:\s*",
         text,
@@ -61,14 +62,21 @@ def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
     )
     if lead:
         text = text[lead.end():]
+    # Stop at the first inline speaker tag — at line start OR after whitespace
+    # / punctuation. At 8B the model frequently role-plays the other agent
+    # inline (`"...Bob: I don't know..."`) without a newline first.
     patterns = [
-        r"\n\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
-        r"\n\s*[A-Z][A-Za-z]{2,20}\s*:",
+        r"(?:^|\n|[.!?\"]\s+|\s{2,})(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
+        r"(?:^|\n|[.!?\"]\s+|\s{2,})[A-Z][A-Za-z]{2,20}\s*:",
     ]
     for pat in patterns:
         m = re.search(pat, text, flags=re.IGNORECASE if pat == patterns[0] else 0)
         if m:
             text = text[: m.start()]
+    # Strip trailing meta-instructions the instruct model sometimes appends
+    # (e.g. `(Please keep your response under 20 lines.)`).
+    text = re.sub(r"\s*\((?:[Pp]lease|[Nn]ote)[^)]*\)\s*$", "", text)
+    text = re.sub(r"\s*\((?:[Pp]lease|[Nn]ote)[^)]*\)", "", text)
     return text.strip()
 
 

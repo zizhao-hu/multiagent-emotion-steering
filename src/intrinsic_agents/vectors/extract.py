@@ -84,13 +84,18 @@ def extract_all(
     layer: int | None = None,
     device: str | None = None,
     selected: list[str] | None = None,
+    dtype: torch.dtype | None = None,
 ) -> dict[str, Path]:
     """Extract vectors for every trait in the YAML. Returns {trait: cache_path}."""
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dtype is None:
+        # bf16 on cuda saves half the VRAM and is fine for difference-of-means;
+        # fp32 on cpu since cpu bf16 ops are unsupported on most kernels.
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
     tok = AutoTokenizer.from_pretrained(model_name)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float32).to(device)
+    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype).to(device)
     model.eval()
 
     if layer is None:

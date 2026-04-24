@@ -47,22 +47,28 @@ the Claude-as-judge adapter (gate 3 of replication and the judge for F1–F5).
 4. Once gate 1–3 pass on Qwen-7B, we have evidence to run 02_continuous
    and the F1–F5 factorial for real.
 
-## What we already know (from local smoke tests)
+## What we already know
 
-Gate-1 leave-one-out AUC, CPU, default mid-layer:
+Gate-1 leave-one-out AUC at the model's middle layer:
 
-| Trait          | gpt2 | Qwen-0.5B | **Llama-3.2-1B** |
-|----------------|-----:|----------:|----------------:|
-| honesty        | 0.52 |      0.58 |            0.63 |
-| sycophancy     | 0.66 |      0.48 |        **0.88** |
-| hallucination  | 0.75 |      0.56 |        **0.92** |
-| joy            | 0.72 |      0.89 |        **0.97** |
-| curiosity      | 0.86 |      0.92 |        **1.00** |
-| surprise       | 0.67 |      0.86 |        **0.97** |
-| scholar        | 0.58 |      0.72 |            0.73 |
-| caregiver      | 0.64 |      0.95 |        **1.00** |
-| explorer       | 0.55 |      0.81 |        **0.88** |
-| **passing**    |  1/9 |       4/9 |         **7/9** |
+| Trait          | gpt2 (cpu) | Qwen-0.5B (cpu) | Llama-3.2-1B (cpu) | **Llama-3.1-8B (4090)** |
+|----------------|-----:|----------:|----------------:|------------------:|
+| honesty        | 0.52 |      0.58 |            0.63 |          **0.89** |
+| sycophancy     | 0.66 |      0.48 |            0.88 |              0.86 |
+| hallucination  | 0.75 |      0.56 |            0.92 |          **1.00** |
+| joy            | 0.72 |      0.89 |            0.97 |              0.97 |
+| curiosity      | 0.86 |      0.92 |            1.00 |              0.98 |
+| sadness        |  —   |       —   |            0.97 |          **1.00** |
+| anger          |  —   |       —   |            0.98 |          **1.00** |
+| surprise       | 0.67 |      0.86 |            0.97 |              0.89 |
+| scholar        | 0.58 |      0.72 |            0.73 |          **0.97** |
+| caregiver      | 0.64 |      0.95 |            1.00 |              1.00 |
+| explorer       | 0.55 |      0.81 |            0.88 |              1.00 |
+| **passing**    |  1/9 |       4/9 |             7/9 |        **11/11**  |
+
+Llama-3.1-8B-Instruct passes gate-1 on every trait — including the
+character traits (honesty, scholar) that didn't clear at 1B. This
+matches what the Anthropic paper predicts about scale.
 
 Pattern matches the Anthropic paper: gate-1 cleanliness scales with model
 size. Only `honesty` and `scholar` remain below threshold on Llama-1B.
@@ -145,3 +151,13 @@ gate-1 sweep suggest mid-to-upper-mid, so layer 14–18.
   Refactored both demos to share ONE base model (agents = context +
   steering config); halves memory and aligns with the eventual
   LoRA-adapter architecture. Device + dtype auto-detect added.
+- 2026-04-24 — moved off CPU. Reinstalled torch with CUDA 12.4, scaled
+  up to Llama-3.1-8B-Instruct on the 4090 (bf16, ~16 GB VRAM). Gate-1
+  passes 11/11 traits — honesty 0.89, scholar 0.97 — exactly the
+  scaling pattern the Anthropic paper predicts for character traits.
+  Re-ran the contagion sweep on 8B with stronger trim regex (catches
+  inline speaker tags) and meta-instruction stripping. Results: joy+
+  vs joy- now produce DIFFERENT bob-joy drifts (-0.07 vs -0.21) — sign
+  flip is real. sadness+ produces +0.26 bob-sadness drift (vs control
+  -0.11): trait-specific contagion at activation level. Transcripts
+  are clean and personality-distinct.

@@ -65,13 +65,15 @@ def _trim_to_next_speaker(text: str, speaker_names: list[str]) -> str:
     if lead:
         text = text[lead.end():]
     patterns = [
-        r"\n\s*(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
-        r"\n\s*[A-Z][A-Za-z]{2,20}\s*:",
+        r"(?:^|\n|[.!?\"]\s+|\s{2,})(?:" + "|".join(re.escape(n) for n in speaker_names) + r")\s*:",
+        r"(?:^|\n|[.!?\"]\s+|\s{2,})[A-Z][A-Za-z]{2,20}\s*:",
     ]
     for pat in patterns:
         m = re.search(pat, text, flags=re.IGNORECASE if pat == patterns[0] else 0)
         if m:
             text = text[: m.start()]
+    text = re.sub(r"\s*\((?:[Pp]lease|[Nn]ote)[^)]*\)\s*$", "", text)
+    text = re.sub(r"\s*\((?:[Pp]lease|[Nn]ote)[^)]*\)", "", text)
     return text.strip()
 
 
