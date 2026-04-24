@@ -194,6 +194,101 @@ def mean(xs: list[float]) -> float:
     return sum(xs) / max(len(xs), 1)
 
 
+def heatmap_svg(
+    rows: list[str],
+    cols: list[str],
+    values: list[list[float]],
+    title: str = "",
+    cell_size: int = 64,
+    label_left_w: int = 130,
+    label_top_h: int = 60,
+) -> str:
+    """Square-cell heatmap. Continuous orange (negative) → blue (positive)."""
+    if not rows or not cols:
+        return ""
+    flat = [v for row in values for v in row]
+    vmax = max(abs(v) for v in flat) or 1.0
+    n_rows = len(rows)
+    n_cols = len(cols)
+    width = label_left_w + n_cols * cell_size + 20
+    height = label_top_h + n_rows * cell_size + 20
+
+    def color(v: float) -> str:
+        # Symmetric scale: -vmax → orange (#c2410c), 0 → off-white, +vmax → blue (#0369a1)
+        t = max(-1.0, min(1.0, v / vmax))
+        if t >= 0:
+            r = int(255 + (3 - 255) * t)
+            g = int(252 + (105 - 252) * t)
+            b = int(243 + (161 - 243) * t)
+        else:
+            t = -t
+            r = int(255 + (194 - 255) * t)
+            g = int(252 + (65 - 252) * t)
+            b = int(243 + (12 - 243) * t)
+        return f"rgb({r},{g},{b})"
+
+    def text_color(v: float) -> str:
+        # White text once cell color gets dark enough
+        return "#fff" if abs(v) / vmax > 0.55 else "#1a1a1a"
+
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'font-family="ui-monospace,Menlo,monospace" font-size="11">'
+    ]
+    if title:
+        svg.append(f'<text x="{label_left_w}" y="14" font-size="12" fill="#5c6370">{title}</text>')
+    # column labels
+    for j, c in enumerate(cols):
+        cx = label_left_w + j * cell_size + cell_size / 2
+        svg.append(
+            f'<text x="{cx}" y="{label_top_h - 8}" text-anchor="middle" '
+            f'fill="#1a1a1a" font-weight="600">{c}</text>'
+        )
+    # row labels + cells
+    for i, r in enumerate(rows):
+        cy = label_top_h + i * cell_size + cell_size / 2
+        svg.append(
+            f'<text x="{label_left_w - 8}" y="{cy + 4}" text-anchor="end" '
+            f'fill="#1a1a1a" font-weight="600">{r}</text>'
+        )
+        for j in range(len(cols)):
+            v = values[i][j]
+            x = label_left_w + j * cell_size
+            y = label_top_h + i * cell_size
+            svg.append(
+                f'<rect x="{x}" y="{y}" width="{cell_size}" height="{cell_size}" '
+                f'fill="{color(v)}" stroke="#fff" stroke-width="1"/>'
+            )
+            svg.append(
+                f'<text x="{x + cell_size/2}" y="{y + cell_size/2 + 4}" '
+                f'text-anchor="middle" fill="{text_color(v)}">{v:+.2f}</text>'
+            )
+    # legend
+    leg_y = label_top_h + n_rows * cell_size + 6
+    leg_w = 240
+    leg_x = label_left_w
+    grad_id = f"grad_{id(values)}"
+    svg.append(
+        f'<defs><linearGradient id="{grad_id}" x1="0" x2="1" y1="0" y2="0">'
+        f'<stop offset="0" stop-color="rgb(194,65,12)"/>'
+        f'<stop offset="0.5" stop-color="rgb(255,252,243)"/>'
+        f'<stop offset="1" stop-color="rgb(3,105,161)"/></linearGradient></defs>'
+    )
+    svg.append(
+        f'<rect x="{leg_x}" y="{leg_y}" width="{leg_w}" height="8" fill="url(#{grad_id})" '
+        f'stroke="#ccc" stroke-width="0.5"/>'
+    )
+    svg.append(f'<text x="{leg_x}" y="{leg_y + 22}" font-size="10" fill="#5c6370">{-vmax:+.2f}</text>')
+    svg.append(
+        f'<text x="{leg_x + leg_w}" y="{leg_y + 22}" font-size="10" fill="#5c6370" '
+        f'text-anchor="end">{+vmax:+.2f}</text>'
+    )
+    svg.append(f'<text x="{leg_x + leg_w/2}" y="{leg_y + 22}" font-size="10" fill="#5c6370" '
+               f'text-anchor="middle">drift (end − start)</text>')
+    svg.append("</svg>")
+    return "\n".join(svg)
+
+
 def render_html(results: dict, out_path: Path, meta: dict) -> None:
     conds = list(results.keys())
     html = [
@@ -224,46 +319,27 @@ def render_html(results: dict, out_path: Path, meta: dict) -> None:
 
     # Drift matrix: rows = condition, cols = bob's trait drift
     traits = meta["traits"]
+    bob_drift = [
+        [drift(results[cond]["trajectories"]["bob"][t]) for t in traits]
+        for cond in conds
+    ]
     html.append("<h2>Bob's trait drift (end − start projection)</h2>")
-    html.append("<table>")
-    html.append("<tr><th>condition</th>" + "".join(f"<th>s_{t}</th>" for t in traits) + "</tr>")
-    for cond in conds:
-        row = [f"<td class='label'>{cond}</td>"]
-        for t in traits:
-            d = drift(results[cond]["trajectories"]["bob"][t])
-            cls = ""
-            mag = abs(d)
-            if mag > 0.25:
-                cls = "strong-pos" if d > 0 else "strong-neg"
-            elif mag > 0.05:
-                cls = "pos" if d > 0 else "neg"
-            row.append(f"<td class='{cls}'>{d:+.2f}</td>")
-        html.append("<tr>" + "".join(row) + "</tr>")
-    html.append("</table>")
+    html.append(heatmap_svg(rows=conds, cols=traits, values=bob_drift,
+                            title="bob — observer (probe only, no steering)"))
     html.append(
         "<p class='caption'>Each cell is (bob's projection at last turn − bob's projection at first turn). "
         "Positive drift means bob's residual-stream moved toward that trait; negative means away. "
         "The <b>control</b> row shows baseline drift with no steering on alice's side.</p>"
     )
 
-    # Alice's own trajectory too (sanity check — she should track her injected direction)
-    html.append("<h2>Alice's trait drift (sanity check — she should saturate where steered)</h2>")
-    html.append("<table>")
-    html.append("<tr><th>condition</th>" + "".join(f"<th>s_{t}</th>" for t in traits) + "</tr>")
-    for cond in conds:
-        row = [f"<td class='label'>{cond}</td>"]
-        for t in traits:
-            # alice's mean projection over the whole run
-            vals = results[cond]["trajectories"]["alice"][t]
-            m = mean(vals)
-            cls = ""
-            if abs(m) > 0.5:
-                cls = "strong-pos" if m > 0 else "strong-neg"
-            elif abs(m) > 0.15:
-                cls = "pos" if m > 0 else "neg"
-            row.append(f"<td class='{cls}'>{m:+.2f}</td>")
-        html.append("<tr>" + "".join(row) + "</tr>")
-    html.append("</table>")
+    # Alice's own mean projection (sanity check — she should track her injected direction)
+    alice_mean = [
+        [mean(results[cond]["trajectories"]["alice"][t]) for t in traits]
+        for cond in conds
+    ]
+    html.append("<h2>Alice's mean trait projection (sanity check — should saturate where steered)</h2>")
+    html.append(heatmap_svg(rows=conds, cols=traits, values=alice_mean,
+                            title="alice — source (steered toward one trait per condition)"))
 
     # Per-condition transcripts
     html.append("<h2>transcripts (click to expand)</h2>")
