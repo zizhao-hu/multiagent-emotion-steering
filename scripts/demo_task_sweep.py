@@ -124,6 +124,7 @@ def run_problem(
     max_new_tokens: int,
     traits: list[str],
     seed: int,
+    first_speaker: str = "alice",
 ) -> dict:
     """Run one (alice, bob) collaboration on one math problem."""
     torch.manual_seed(seed)
@@ -138,7 +139,11 @@ def run_problem(
     )
     transcript: list[str] = []
     traj = {a.name: {t: [] for t in traits} for a in (alice, bob)}
-    agents = [alice, bob]
+    # Order determines who speaks first (turn 0). The other speaks turn 1, etc.
+    if first_speaker == "bob":
+        agents = [bob, alice]
+    else:
+        agents = [alice, bob]
     final_answer = None
     for turn in range(turns):
         speaker = agents[turn % 2]
@@ -362,10 +367,12 @@ def render_html(results: dict, problems: list[dict], out_path: Path, meta: dict)
         "</style></head><body>",
     ]
     html.append("<h1>Task-grounded contagion sweep — GSM8K</h1>")
+    first_speaker = meta.get("first_speaker", "alice")
     html.append(
         f"<p class='caption'>{meta['model']} · layer {meta['layer']} · "
         f"{len(problems)} GSM8K problems × {len(conds)} conditions · "
         f"alice steered toward one emotion, bob is probe-only observer · "
+        f"<b>{first_speaker} opens each conversation</b> · "
         f"early-exits when either agent declares a final answer.</p>"
     )
 
@@ -439,6 +446,8 @@ def main() -> None:
     p.add_argument("--dtype", default=None, choices=[None, "fp32", "bf16", "fp16"])
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "demo" / "task_sweep"))
+    p.add_argument("--first-speaker", default="alice", choices=["alice", "bob"],
+                   help="who opens the conversation (default: alice — the steered agent)")
     args = p.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -488,6 +497,7 @@ def main() -> None:
             r = run_problem(
                 alice, bob, model, tok, probe, steering,
                 problem, args.turns, args.max_new_tokens, traits, args.seed + i,
+                first_speaker=args.first_speaker,
             )
             cond_results.append(r)
             n_correct += r["correct"]
@@ -512,7 +522,12 @@ def main() -> None:
         results,
         problems,
         out_dir / "report.html",
-        meta={"model": args.model, "layer": args.layer, "traits": traits},
+        meta={
+            "model": args.model,
+            "layer": args.layer,
+            "traits": traits,
+            "first_speaker": args.first_speaker,
+        },
     )
     print(f"\nWrote {out_dir}/report.html, results.json, problems.json")
 
