@@ -479,21 +479,54 @@ def main() -> None:
     problems = load_gsm8k(args.n_problems)
     print(f"  loaded {len(problems)} problems\n")
 
+    def serialize(rs_dict: dict) -> dict:
+        return {
+            cond: [
+                {k: v for k, v in r.items() if k != "trajectories"}
+                | {"trajectories": {ag: {t: list(traj) for t, traj in d.items()}
+                                    for ag, d in r["trajectories"].items()}}
+                for r in rs
+            ]
+            for cond, rs in rs_dict.items()
+        }
+
+    # Always (re-)write problems.json up front so the run dir is parseable
+    # even if we crash mid-condition.
+    (out_dir / "problems.json").write_text(json.dumps(problems, indent=2))
+
+    # Resume support: if results.json already has results, skip problems
+    # whose index is below the per-condition cursor.
     results: dict = {}
+    if (out_dir / "results.json").exists():
+        try:
+            results = json.loads((out_dir / "results.json").read_text())
+            print("resuming — pre-existing per-condition counts:")
+            for c, rs in results.items():
+                print(f"  {c}: {len(rs)}/{len(problems)}")
+        except Exception:
+            results = {}
+
     for cond_name, trait, alpha in CONDITIONS:
+        existing = results.get(cond_name, [])
+        if len(existing) == len(problems):
+            print(f"\n[{cond_name}] (already complete, skipping)")
+            continue
+
         if trait is None:
             alice.steering_vector = None
             alice.alpha = 0.0
-            print(f"\n[{cond_name}] alice = NO steering (control)")
+            print(f"\n[{cond_name}] alice = NO steering (control) — starting at problem {len(existing)+1}")
         else:
             v = load_vector(cache, args.model, trait, args.layer)
             alice.steering_vector = v
             alice.alpha = alpha
-            print(f"\n[{cond_name}] alice <- {alpha:+.1f} * v_{trait}")
+            print(f"\n[{cond_name}] alice <- {alpha:+.1f} * v_{trait} — starting at problem {len(existing)+1}")
 
-        cond_results = []
-        n_correct = 0
+        cond_results = list(existing)
+        n_correct = sum(r["correct"] for r in cond_results)
         for i, problem in enumerate(problems):
+            if i < len(existing):
+                continue  # already done
             r = run_problem(
                 alice, bob, model, tok, probe, steering,
                 problem, args.turns, args.max_new_tokens, traits, args.seed + i,
@@ -503,20 +536,14 @@ def main() -> None:
             n_correct += r["correct"]
             mark = "OK" if r["correct"] else "X "
             print(f"  [{i+1}/{len(problems)}] {mark} pred={r['predicted']} gold={problem['gold']} ({r['n_turns']} turns)")
+            # Save inside the per-problem loop too (cheap; it's a json dump)
+            # so a kill mid-condition still preserves problem-level progress.
+            results[cond_name] = cond_results
+            if (i + 1) % 5 == 0 or i == len(problems) - 1:
+                (out_dir / "results.json").write_text(json.dumps(serialize(results), indent=2))
         results[cond_name] = cond_results
         print(f"  {cond_name}: {n_correct}/{len(problems)} correct")
-
-    # Save raw + render
-    serialisable = {
-        cond: [
-            {k: v for k, v in r.items() if k != "trajectories"}
-            | {"trajectories": {ag: {t: list(traj) for t, traj in d.items()} for ag, d in r["trajectories"].items()}}
-            for r in rs
-        ]
-        for cond, rs in results.items()
-    }
-    (out_dir / "results.json").write_text(json.dumps(serialisable, indent=2))
-    (out_dir / "problems.json").write_text(json.dumps(problems, indent=2))
+        (out_dir / "results.json").write_text(json.dumps(serialize(results), indent=2))
 
     render_html(
         results,
