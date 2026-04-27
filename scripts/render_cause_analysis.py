@@ -162,6 +162,68 @@ OUTCOME_COLOR = {
     "stay_wrong":   "#e8a8a8",
 }
 
+# High-level "kind of behavior" grouping over the 8 active causes.
+# H_stylistic_only is excluded from analysis (same predicted answer; no outcome
+# change by definition), so it has no meta-tag.
+CAUSE_META = {
+    "A_decomposition_shift":   "exploring",
+    "B_arithmetic_divergence": "reasoning",
+    "C_verification_bypass":   "manipulating",
+    "D_disagreement_loop":     "exploring",
+    "E_early_termination":     "manipulating",
+    "F_magnitude_error":       "reasoning",
+    "G_semantic_reframing":    "exploring",
+    "I_extraction_artifact":   "artifact",
+    "J_other":                 "artifact",
+    # H_stylistic_only intentionally absent — excluded from analysis.
+}
+
+META_ORDER = ["reasoning", "manipulating", "exploring", "artifact"]
+
+META_LABEL = {
+    "reasoning":    "Reasoning",
+    "manipulating": "Manipulating",
+    "exploring":    "Exploring",
+    "artifact":     "Artifact",
+}
+
+META_BLURB = {
+    "reasoning": (
+        "The math/logic chain itself diverged — same setup, different number "
+        "comes out (B); or one step is so wrong the answer is 10×+ off (F)."
+    ),
+    "manipulating": (
+        "One agent's social move shortcuts the dialogue — the stable agent "
+        "capitulates without re-deriving (C), or the emotional agent "
+        "declares an answer before the stable agent can push back (E)."
+    ),
+    "exploring": (
+        "The emotional agent's framing or proposal-generation diverged — "
+        "different opening angle (A), question re-read (G), or many "
+        "different numbers proposed without convergence (D)."
+    ),
+    "artifact": (
+        "Not a behavioral effect — measurement quirks. Right number reached "
+        "but never formally declared (I), or signals too mixed to classify (J)."
+    ),
+}
+
+META_COLOR = {
+    "reasoning":    "#1f77b4",
+    "manipulating": "#d62728",
+    "exploring":    "#2ca02c",
+    "artifact":     "#7f7f7f",
+}
+
+
+def meta_pill(meta: str) -> str:
+    if meta is None or meta not in META_LABEL:
+        return ""
+    return (
+        f'<span class="meta-pill" style="background:{META_COLOR[meta]}">'
+        f'{esc(META_LABEL[meta])}</span>'
+    )
+
 
 def esc(s) -> str:
     return html.escape(str(s) if s is not None else "—")
@@ -188,21 +250,21 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
       1. helped bar (green) growing leftward toward the centre
       2. cause label (centre)
       3. hurt bar (red) growing rightward away from the centre
-      4. margin bar (= hurt - helped) on the far right; positive value
-         (net-harmful) draws right in red, negative (net-helpful) draws right
-         in green, zero draws as a neutral pip. The sign is the actionable
-         signal — "this cause type is, on net, hurting or helping."
+      4. margin bar (= helped − hurt) on the far right; positive value
+         (net-helpful) draws right in green, negative (net-harmful) draws
+         right in red, zero draws as a neutral pip. The sign convention is
+         intuition-aligned: + = more correct = green; − = more wrong = red.
 
-    Causes are sorted by the margin (hurt - helped) DESCENDING — most
-    net-harmful first, most net-helpful last. Ties broken by larger total
-    impact, then by cause key.
+    Causes are sorted by margin ASCENDING — most net-harmful (most negative)
+    first, most net-helpful (most positive) last. Ties broken by larger
+    total impact, then by cause key.
 
     Bars share scales across all 6 emotions in one ordering so the panels
     are visually comparable side-by-side.
     """
     # Build per-(emo, cause) outcome counter and compute scales:
     #   max_side   = largest single helped or hurt count (for the diverging bars)
-    #   max_margin = largest absolute (hurt - helped) magnitude (for the margin bar)
+    #   max_margin = largest absolute (helped - hurt) magnitude (for the margin bar)
     per_emo: dict[str, dict[str, Counter]] = {}
     max_side = 0
     max_margin = 0
@@ -217,7 +279,7 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
             h = oc.get("helped", 0)
             x = oc.get("hurt", 0)
             max_side = max(max_side, h, x)
-            max_margin = max(max_margin, abs(x - h))
+            max_margin = max(max_margin, abs(h - x))
         per_emo[emo] = emo_counter
     max_side = max(max_side, 1)
     max_margin = max(max_margin, 1)
@@ -233,12 +295,13 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
         net_class = "net-pos" if net > 0 else "net-neg" if net < 0 else "net-zero"
 
         emo_counter = per_emo[emo]
-        # Sort by margin (hurt - helped) DESCENDING — most harmful first.
-        # Ties broken by larger total volume, then alphabetical.
+        # Sort by margin (helped - hurt) ASCENDING — most net-harmful (most
+        # negative) first, most net-helpful (most positive) last. Ties broken
+        # by larger total volume, then alphabetical.
         ranked = sorted(
             emo_counter.items(),
             key=lambda kv: (
-                -(kv[1].get("hurt", 0) - kv[1].get("helped", 0)),
+                kv[1].get("helped", 0) - kv[1].get("hurt", 0),
                 -(kv[1].get("hurt", 0) + kv[1].get("helped", 0)),
                 kv[0],
             ),
@@ -251,13 +314,13 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
             stay = oc.get("stay_correct", 0) + oc.get("stay_wrong", 0)
             if helped == 0 and hurt == 0 and stay == 0:
                 continue
-            margin = hurt - helped  # positive = net-harmful, negative = net-helpful
+            margin = helped - hurt  # + = more correct (green); − = more wrong (red)
             helped_w = 100.0 * helped / max_side
             hurt_w = 100.0 * hurt / max_side
             margin_w = 100.0 * abs(margin) / max_margin
             margin_color = (
-                OUTCOME_COLOR["hurt"] if margin > 0
-                else OUTCOME_COLOR["helped"] if margin < 0
+                OUTCOME_COLOR["helped"] if margin > 0
+                else OUTCOME_COLOR["hurt"] if margin < 0
                 else "#bbb"
             )
             margin_sign = "+" if margin > 0 else ""
@@ -274,7 +337,7 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
     </div>
   </div>
   <div class="centre" style="border-left:4px solid {CAUSE_COLOR[cause]}">
-    <span class="cname">{esc(CAUSE_LABEL[cause])}</span>{stay_note}
+    <span class="cname">{esc(CAUSE_LABEL[cause])}</span> {meta_pill(CAUSE_META.get(cause))}{stay_note}
   </div>
   <div class="side hurt-side">
     <div class="bar hurt-bar" style="width:{hurt_w:.2f}%;background:{OUTCOME_COLOR['hurt']}">
@@ -298,7 +361,7 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
                 '<div class="hdr-l">helped (ctrl wrong → emo right)</div>'
                 '<div class="hdr-c">cause</div>'
                 '<div class="hdr-r">hurt (ctrl right → emo wrong)</div>'
-                '<div class="hdr-m">margin = hurt − helped</div>'
+                '<div class="hdr-m">margin = helped − hurt</div>'
                 '</div>'
                 + "".join(rows)
             )
@@ -320,15 +383,17 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
 def render_cause_matrix_section(by_panel: dict, ordering: str) -> str:
     """Render a cause × emotion heatmap for one ordering.
 
-    Each cell shows the signed margin (hurt − helped) with:
-      - background color: red intensity for net-harmful, green for net-helpful,
-        white for zero (alpha proportional to |margin| / max_margin)
+    Each cell shows the signed margin (helped − hurt) with:
+      - background color: green intensity for net-helpful (+), red for
+        net-harmful (−), neutral for zero (alpha proportional to |margin|
+        / max_margin within this ordering)
       - main text: signed margin
       - subscript: helped/hurt counts as h13·x8
 
-    Rows are causes sorted by total |margin| across emotions descending —
-    most volatile causes at the top. H_stylistic_only is excluded; any cause
-    with zero helped+hurt across all emotions is also dropped.
+    Rows are grouped by meta-tag and within each group sorted by total
+    |margin| across emotions descending — most volatile causes at the top.
+    H_stylistic_only is excluded; any cause with zero helped+hurt across
+    all emotions is also dropped.
     """
     # Build (cause, emotion) -> {helped, hurt} table for this ordering.
     table: dict[str, dict[str, dict[str, int]]] = defaultdict(
@@ -350,24 +415,30 @@ def render_cause_matrix_section(by_panel: dict, ordering: str) -> str:
         and any(table[c][e]["helped"] + table[c][e]["hurt"] for e in EMOTIONS)
     ]
 
-    # Compute per-cell margin and global |margin| max for this ordering.
+    # Compute per-cell margin (helped − hurt) and global |margin| max.
+    # Convention: + = more correct (green); − = more wrong (red).
     cell: dict[tuple[str, str], int] = {}
     max_abs_margin = 0
     for c in causes_present:
         for e in EMOTIONS:
-            m = table[c][e]["hurt"] - table[c][e]["helped"]
+            m = table[c][e]["helped"] - table[c][e]["hurt"]
             cell[(c, e)] = m
             if abs(m) > max_abs_margin:
                 max_abs_margin = abs(m)
     max_abs_margin = max(max_abs_margin, 1)
 
-    # Sort rows by total |margin| across emotions, descending.
-    causes_sorted = sorted(
-        causes_present,
-        key=lambda c: -sum(abs(cell[(c, e)]) for e in EMOTIONS),
-    )
+    # Group causes by meta-tag, then sort within each group by Σ|m| descending.
+    causes_by_meta: dict[str, list[str]] = {m: [] for m in META_ORDER}
+    for c in causes_present:
+        m = CAUSE_META.get(c)
+        if m is not None:
+            causes_by_meta[m].append(c)
+    for m in META_ORDER:
+        causes_by_meta[m].sort(
+            key=lambda c: -sum(abs(cell[(c, e)]) for e in EMOTIONS)
+        )
 
-    # Column totals (across causes) for the footer row.
+    # Column totals (across all causes) for the footer row.
     col_totals = {e: {"helped": 0, "hurt": 0} for e in EMOTIONS}
     for c in causes_present:
         for e in EMOTIONS:
@@ -381,58 +452,95 @@ def render_cause_matrix_section(by_panel: dict, ordering: str) -> str:
         + '<th class="mtx-row-tot">row Σ|m|</th>'
     )
 
-    # Body rows.
+    def _cell_html(m_val: int, h: int, x: int, ord_label: str, e: str, label: str) -> str:
+        if h == 0 and x == 0:
+            return '<td class="mtx-cell mtx-empty">·</td>'
+        alpha = abs(m_val) / max_abs_margin if max_abs_margin else 0
+        # m_val = helped − hurt: + = net-helpful (green), − = net-harmful (red).
+        if m_val > 0:
+            bg = f"rgba(44, 160, 44, {0.10 + 0.55 * alpha:.2f})"
+        elif m_val < 0:
+            bg = f"rgba(214, 39, 40, {0.10 + 0.55 * alpha:.2f})"
+        else:
+            bg = "rgba(180, 180, 180, 0.18)"
+        sign = "+" if m_val > 0 else ""
+        title = f"{ord_label} / {e} / {label}: helped={h}, hurt={x}, margin={sign}{m_val}"
+        return (
+            f'<td class="mtx-cell" style="background:{bg}" title="{esc(title)}">'
+            f'<div class="mtx-margin">{sign}{m_val}</div>'
+            f'<div class="mtx-hx">h{h}·x{x}</div>'
+            f'</td>'
+        )
+
+    # Body rows: meta-tag section header → cause rows → meta-tag subtotal.
     body_rows = []
-    for c in causes_sorted:
-        row_abs_total = sum(abs(cell[(c, e)]) for e in EMOTIONS)
-        cells_html = []
-        for e in EMOTIONS:
-            m = cell[(c, e)]
-            h = table[c][e]["helped"]
-            x = table[c][e]["hurt"]
-            if h == 0 and x == 0:
-                cells_html.append('<td class="mtx-cell mtx-empty">·</td>')
-                continue
-            # Color: red for m>0 (net-harmful), green for m<0 (net-helpful),
-            # neutral for m==0 but cells with activity. Alpha = |m| / max.
-            alpha = abs(m) / max_abs_margin
-            if m > 0:
-                bg = f"rgba(214, 39, 40, {0.10 + 0.55 * alpha:.2f})"
-            elif m < 0:
-                bg = f"rgba(44, 160, 44, {0.10 + 0.55 * alpha:.2f})"
-            else:
-                bg = "rgba(180, 180, 180, 0.18)"
-            sign = "+" if m > 0 else ""
-            title = (
-                f"{ORDERING_LABEL[ordering]} / {e} / {CAUSE_LABEL[c]}: "
-                f"helped={h}, hurt={x}, margin={sign}{m}"
-            )
-            cells_html.append(
-                f'<td class="mtx-cell" style="background:{bg}" title="{esc(title)}">'
-                f'<div class="mtx-margin">{sign}{m}</div>'
-                f'<div class="mtx-hx">h{h}·x{x}</div>'
-                f'</td>'
-            )
+    for meta in META_ORDER:
+        causes_in_meta = causes_by_meta[meta]
+        if not causes_in_meta:
+            continue
+
+        # Section header row spanning all columns.
+        ncols = 1 + len(EMOTIONS) + 1
         body_rows.append(
-            f'<tr>'
-            f'<th class="mtx-row-h" style="border-left:4px solid {CAUSE_COLOR[c]}">'
-            f'{esc(CAUSE_LABEL[c])}</th>'
-            f'{"".join(cells_html)}'
-            f'<td class="mtx-row-tot">{row_abs_total}</td>'
+            f'<tr class="mtx-meta-head" style="--meta-col:{META_COLOR[meta]}">'
+            f'<th colspan="{ncols}">'
+            f'<span class="meta-pill" style="background:{META_COLOR[meta]}">{esc(META_LABEL[meta])}</span>'
+            f'<span class="meta-blurb">{META_BLURB[meta]}</span>'
+            f'</th>'
             f'</tr>'
         )
 
-    # Footer row: column totals (sum of helped, sum of hurt, net margin).
+        # Per-cause rows within this meta-tag.
+        meta_helped = {e: 0 for e in EMOTIONS}
+        meta_hurt = {e: 0 for e in EMOTIONS}
+        for c in causes_in_meta:
+            row_abs_total = sum(abs(cell[(c, e)]) for e in EMOTIONS)
+            cells_html = []
+            for e in EMOTIONS:
+                m_val = cell[(c, e)]
+                h = table[c][e]["helped"]
+                x = table[c][e]["hurt"]
+                meta_helped[e] += h
+                meta_hurt[e] += x
+                cells_html.append(_cell_html(m_val, h, x, ORDERING_LABEL[ordering], e, CAUSE_LABEL[c]))
+            body_rows.append(
+                f'<tr>'
+                f'<th class="mtx-row-h" style="border-left:4px solid {CAUSE_COLOR[c]}">'
+                f'{esc(CAUSE_LABEL[c])}</th>'
+                f'{"".join(cells_html)}'
+                f'<td class="mtx-row-tot">{row_abs_total}</td>'
+                f'</tr>'
+            )
+
+        # Subtotal row for this meta-tag (helped − hurt convention).
+        sub_cells = []
+        sub_row_abs = 0
+        for e in EMOTIONS:
+            h = meta_helped[e]
+            x = meta_hurt[e]
+            m_val = h - x
+            sub_row_abs += abs(m_val)
+            sub_cells.append(_cell_html(m_val, h, x, ORDERING_LABEL[ordering], e, f"Σ {META_LABEL[meta]}"))
+        body_rows.append(
+            f'<tr class="mtx-meta-sub">'
+            f'<th class="mtx-row-h" style="border-left:4px solid {META_COLOR[meta]}">'
+            f'<em>Σ {esc(META_LABEL[meta])}</em></th>'
+            f'{"".join(sub_cells)}'
+            f'<td class="mtx-row-tot">{sub_row_abs}</td>'
+            f'</tr>'
+        )
+
+    # Footer row: column totals (helped − hurt convention).
     footer_cells = []
     for e in EMOTIONS:
         h = col_totals[e]["helped"]
         x = col_totals[e]["hurt"]
-        m = x - h
+        m = h - x
         sign = "+" if m > 0 else ""
-        cls = "delta-pos" if m > 0 else "delta-neg" if m < 0 else "delta-zero"
+        text_color = "#2ca02c" if m > 0 else "#d62728" if m < 0 else "#888"
         footer_cells.append(
             f'<td class="mtx-cell mtx-foot">'
-            f'<div class="mtx-margin {cls}">{sign}{m}</div>'
+            f'<div class="mtx-margin" style="color:{text_color}">{sign}{m}</div>'
             f'<div class="mtx-hx">h{h}·x{x}</div>'
             f'</td>'
         )
@@ -457,17 +565,27 @@ def render_cause_matrix_section(by_panel: dict, ordering: str) -> str:
 
 
 def cause_bar(counts: dict[str, int], total: int) -> str:
-    if total == 0:
-        return '<div class="cause-bar empty">no cells</div>'
+    """Stacked-segment bar showing cause distribution among CHANGED cells only.
+
+    H_stylistic_only is excluded (per analysis convention), so the bar
+    shows only the behavioural divergences — % normalised over those.
+    """
+    changed_total = sum(
+        counts.get(c, 0) for c in CAUSE_ORDER if c != "H_stylistic_only"
+    )
+    if changed_total == 0:
+        return '<div class="cause-bar empty">no changed cells</div>'
     segs = []
     for cause in CAUSE_ORDER:
+        if cause == "H_stylistic_only":
+            continue
         n = counts.get(cause, 0)
         if n == 0:
             continue
-        pct = 100.0 * n / total
+        pct = 100.0 * n / changed_total
         segs.append(
             f'<span class="seg" style="width:{pct:.2f}%;background:{CAUSE_COLOR[cause]}" '
-            f'title="{esc(CAUSE_LABEL[cause])}: {n} ({pct:.1f}%)"></span>'
+            f'title="{esc(CAUSE_LABEL[cause])}: {n} ({pct:.1f}% of changed cells)"></span>'
         )
     return f'<div class="cause-bar">{"".join(segs)}</div>'
 
@@ -582,22 +700,62 @@ def build():
             nav_links.append(f'<a href="#{anchor}">{esc(emo)}</a>')
     nav_html = " · ".join(nav_links)
 
-    # Global cause distribution
+    # Global cause distribution. Grouped by meta-tag; H_stylistic_only is
+    # excluded entirely (no outcome change by definition — see footnote).
     global_counts = Counter(r["cause"] for r in causes)
     total = len(causes)
+    causes_by_meta_global: dict[str, list[str]] = {m: [] for m in META_ORDER}
+    for c in CAUSE_ORDER:
+        if c == "H_stylistic_only":
+            continue
+        m = CAUSE_META.get(c)
+        if m is not None:
+            causes_by_meta_global[m].append(c)
+
     global_table_rows = []
-    for cause in CAUSE_ORDER:
-        n = global_counts.get(cause, 0)
-        pct = 100.0 * n / total if total else 0
-        # CAUSE_BLURB strings are author-trusted and contain inline HTML
-        # (<strong>, <code>); render them raw, do not html-escape.
+    for meta in META_ORDER:
+        causes_in_meta = causes_by_meta_global[meta]
+        if not causes_in_meta:
+            continue
+        meta_n = sum(global_counts.get(c, 0) for c in causes_in_meta)
+        meta_pct = 100.0 * meta_n / total if total else 0
+        # Section header row.
         global_table_rows.append(
-            f"<tr>"
-            f'<td><span class="swatch" style="background:{CAUSE_COLOR[cause]}"></span>{esc(CAUSE_LABEL[cause])}</td>'
-            f"<td>{n}</td><td>{pct:.1f}%</td>"
-            f'<td class="blurb">{CAUSE_BLURB[cause]}</td>'
-            f"</tr>"
+            f'<tr class="taxon-meta-head" style="--meta-col:{META_COLOR[meta]}">'
+            f'<td colspan="4">'
+            f'<span class="meta-pill" style="background:{META_COLOR[meta]}">{esc(META_LABEL[meta])}</span>'
+            f' <span class="muted">({meta_n} cells, {meta_pct:.1f}% of all 2,400)</span>'
+            f' — <span class="meta-blurb-inline">{META_BLURB[meta]}</span>'
+            f'</td>'
+            f'</tr>'
         )
+        for cause in causes_in_meta:
+            n = global_counts.get(cause, 0)
+            pct = 100.0 * n / total if total else 0
+            # CAUSE_BLURB strings contain inline HTML; render raw, do not escape.
+            global_table_rows.append(
+                f"<tr>"
+                f'<td><span class="swatch" style="background:{CAUSE_COLOR[cause]}"></span>'
+                f'{esc(CAUSE_LABEL[cause])}</td>'
+                f"<td>{n}</td><td>{pct:.1f}%</td>"
+                f'<td class="blurb">{CAUSE_BLURB[cause]}</td>'
+                f"</tr>"
+            )
+
+    # Footer footnote about H_stylistic_only.
+    h_n = global_counts.get("H_stylistic_only", 0)
+    h_pct = 100.0 * h_n / total if total else 0
+    global_table_rows.append(
+        f'<tr class="taxon-footnote">'
+        f'<td colspan="4" class="muted">'
+        f'<em>Excluded from analysis:</em> '
+        f'<strong>H. Same answer, different wording</strong> — {h_n} cells '
+        f'({h_pct:.1f}% of all 2,400). Same predicted answer as control; outcome '
+        f'unchanged by definition. Doesn\'t belong to any meta-tag (it is not a '
+        f'behavioural divergence) and is dropped from the matrix and ranking bars.'
+        f'</td>'
+        f'</tr>'
+    )
 
     # Outcome-change table
     outcome_counts = Counter(r["outcome_change"] for r in causes)
@@ -691,17 +849,19 @@ def build():
             # cause distribution stacked bar
             bar = cause_bar(counts, n)
 
-            # Cause-count list, sorted by frequency descending (excluding the
-            # H_stylistic_only "no-change" bucket from the headline ranking).
+            # Cause-count chips, sorted by frequency desc. H is excluded
+            # entirely (it's the no-change bucket and not part of the analysis).
             ranked = sorted(
-                ((c, counts.get(c, 0)) for c in CAUSE_ORDER if counts.get(c, 0) > 0),
-                key=lambda kv: (kv[0] == "H_stylistic_only", -kv[1]),
+                ((c, counts.get(c, 0)) for c in CAUSE_ORDER
+                 if c != "H_stylistic_only" and counts.get(c, 0) > 0),
+                key=lambda kv: -kv[1],
             )
             cause_chips = []
             for c, cnt in ranked:
                 cause_chips.append(
                     f'<span class="chip" style="border-left:6px solid {CAUSE_COLOR[c]}">'
-                    f'<strong>{cnt}</strong> {esc(CAUSE_LABEL[c])}</span>'
+                    f'<strong>{cnt}</strong> {esc(CAUSE_LABEL[c])} '
+                    f'{meta_pill(CAUSE_META.get(c))}</span>'
                 )
             chips_html = " ".join(cause_chips)
 
@@ -851,6 +1011,15 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
 .delta-neg { color: #2ca02c; font-weight: 600; }
 .delta-zero { color: var(--muted); }
 table.gtable td:nth-child(n+2):nth-child(-n+8) { text-align: right; }
+/* Meta-tag pills + grouped section headers */
+.meta-pill { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 11px; color: #fff; font-weight: 600; letter-spacing: 0.02em; vertical-align: middle; }
+.meta-blurb { font-size: 11.5px; color: var(--muted); font-weight: normal; margin-left: 8px; }
+.meta-blurb-inline { font-size: 12.5px; color: var(--muted); }
+tr.taxon-meta-head td { background: var(--bg2); padding: 8px 10px; border-top: 2px solid #ccc; border-bottom: 1px solid var(--line); }
+tr.taxon-footnote td { background: #fafafa; padding: 8px 10px; font-size: 12px; border-top: 2px dashed var(--line); }
+tr.mtx-meta-head th { padding: 8px 6px 4px; text-align: left; background: transparent; border: none; }
+tr.mtx-meta-sub th, tr.mtx-meta-sub td { background: #fafafa; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; }
+tr.mtx-meta-sub td.mtx-cell { font-weight: 600; }
 /* Cause × emotion margin matrix */
 section.matrix { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); border-radius: 6px; }
 .mtx-block { display: inline-block; vertical-align: top; margin: 0.4em 1em 0.6em 0; }
@@ -958,7 +1127,7 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
   <h2>Cause × emotion fingerprint — margin matrix</h2>
   <p class="mtx-legend">
     For each <em>(cause, emotion)</em> pair, the cell shows the signed
-    <strong>margin = hurt − helped</strong>. <span class="swatch-mtx" style="background:rgba(214,39,40,0.45)"></span><strong>red</strong> = on net this emotion produced more <em>hurt</em> flips through this cause than <em>helped</em> flips (net-harmful via this mechanism); <span class="swatch-mtx" style="background:rgba(44,160,44,0.45)"></span><strong>green</strong> = net-helpful; <span class="swatch-mtx" style="background:rgba(180,180,180,0.18)"></span>neutral = the cause fired but helped/hurt are balanced. Color intensity is proportional to <code>|margin|</code> within each ordering. The small <code>h·x</code> line is helped/hurt counts. Rows are sorted by <code>row Σ|m|</code> (most volatile causes at top); <code>H. Same answer, different tone</code> is excluded by definition (no outcome change). The two matrices are independently scaled.
+    <strong>margin = helped − hurt</strong>. <span class="swatch-mtx" style="background:rgba(44,160,44,0.45)"></span><strong>green (+)</strong> = on net this emotion produced more <em>helped</em> flips through this cause than <em>hurt</em> flips (net-helpful via this mechanism); <span class="swatch-mtx" style="background:rgba(214,39,40,0.45)"></span><strong>red (−)</strong> = net-harmful; <span class="swatch-mtx" style="background:rgba(180,180,180,0.18)"></span>neutral = the cause fired but helped/hurt are balanced. Color intensity is proportional to <code>|margin|</code> within each ordering. The small <code>h·x</code> line is helped/hurt counts. Rows are grouped by meta-tag (Reasoning / Manipulating / Exploring / Artifact) and sorted within each group by <code>row Σ|m|</code> descending. <code>H. Same answer, different wording</code> is excluded entirely (no outcome change by definition). The two matrices are scaled independently.
   </p>
   {render_cause_matrix_section(by_panel, "alice")}
   {render_cause_matrix_section(by_panel, "bob")}
@@ -966,7 +1135,7 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
 
 <section class="ranking">
   <h2>Cause ranking — what each emotion changed most vs control</h2>
-  <p class="muted">Three bars per row: <span class="legend-pill" style="background:{OUTCOME_COLOR['helped']}">helped</span> (control wrong → emotion right) growing left from centre; <span class="legend-pill" style="background:{OUTCOME_COLOR['hurt']}">hurt</span> (control right → emotion wrong) growing right from centre; and <strong>margin = hurt − helped</strong> on the far right (red if net-harmful, green if net-helpful). Causes are sorted by margin descending — most net-harmful at the top, most net-helpful at the bottom. Bars share scales per ordering. <code>H. Same answer, different tone</code> (no outcome change) is excluded.</p>
+  <p class="muted">Three bars per row: <span class="legend-pill" style="background:{OUTCOME_COLOR['helped']}">helped</span> (control wrong → emotion right) growing left from centre; <span class="legend-pill" style="background:{OUTCOME_COLOR['hurt']}">hurt</span> (control right → emotion wrong) growing right from centre; and <strong>margin = helped − hurt</strong> on the far right (green if net-helpful <em>+</em>, red if net-harmful <em>−</em>). Causes are sorted by margin <em>ascending</em> — most net-harmful at the top, most net-helpful at the bottom. Bars share scales per ordering. <code>H. Same answer, different wording</code> (no outcome change) is excluded.</p>
   {render_cause_ranking_section(by_panel, "alice")}
   {render_cause_ranking_section(by_panel, "bob")}
 </section>
