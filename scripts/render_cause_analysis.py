@@ -27,6 +27,18 @@ ANA = REPO / "analysis"
 
 EMOTIONS = ["joy+", "joy-", "sadness+", "anger+", "curiosity+", "surprise+"]
 ORDERINGS = ["alice", "bob"]
+# Canonical storage uses "alice" / "bob" because that is what the transcripts
+# actually contain ([01] alice: ...). For rendering we re-label by role:
+#   alice = emotional agent (the steered one)
+#   bob   = stable agent    (unsteered)
+ORDERING_LABEL = {
+    "alice": "emotional-first",
+    "bob": "stable-first",
+}
+ORDERING_DESC = {
+    "alice": "emotional agent opens the conversation",
+    "bob": "stable agent opens the conversation",
+}
 
 CAUSE_ORDER = [
     "A_decomposition_shift",
@@ -168,7 +180,7 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
     if max_side == 0:
         max_side = 1
 
-    parts = [f'<h3 class="rank-ord-h">{esc(ordering)}-first</h3>']
+    parts = [f'<h3 class="rank-ord-h" title="{esc(ORDERING_DESC[ordering])}">{esc(ORDERING_LABEL[ordering])}</h3>']
     for emo in EMOTIONS:
         sub = by_panel[(ordering, emo)]
         n_total = len(sub)
@@ -363,7 +375,7 @@ def build():
     # ---- Build nav + panels ----
     nav_links = []
     for ordering in ORDERINGS:
-        nav_links.append(f'<span class="nav-group">{ordering}-first:</span>')
+        nav_links.append(f'<span class="nav-group">{esc(ORDERING_LABEL[ordering])}:</span>')
         for emo in EMOTIONS:
             anchor = f"{ordering}-{emo.replace('+','p').replace('-','m')}"
             nav_links.append(f'<a href="#{anchor}">{esc(emo)}</a>')
@@ -397,7 +409,7 @@ def build():
     # Per-emotion delta-acc summary (helped − hurt) per ordering
     helped_hurt_rows = []
     for ordering in ORDERINGS:
-        helped_hurt_rows.append(f'<tr><td colspan="5"><strong>{ordering}-first</strong></td></tr>')
+        helped_hurt_rows.append(f'<tr><td colspan="6"><strong>{esc(ORDERING_LABEL[ordering])}</strong> <span class="muted">({esc(ORDERING_DESC[ordering])})</span></td></tr>')
         for emo in EMOTIONS:
             sub = by_panel[(ordering, emo)]
             h = sum(1 for r in sub if r["outcome_change"] == "helped")
@@ -418,7 +430,7 @@ def build():
     # Build panels
     panel_html_parts = []
     for ordering in ORDERINGS:
-        panel_html_parts.append(f'<h2 class="ord-h">{esc(ordering)}-first</h2>')
+        panel_html_parts.append(f'<h2 class="ord-h">{esc(ORDERING_LABEL[ordering])} <span class="muted" style="font-weight:normal;font-size:0.7em">— {esc(ORDERING_DESC[ordering])}</span></h2>')
         src = alice_src if ordering == "alice" else bob_src
         for emo in EMOTIONS:
             anchor = f"{ordering}-{emo.replace('+','p').replace('-','m')}"
@@ -465,7 +477,7 @@ def build():
             panel_html_parts.append(f"""
 <section class="panel" id="{anchor}">
   <header class="panel-head">
-    <h3>{esc(ordering)}-first / {esc(emo)} <span class="muted">({n} cells)</span></h3>
+    <h3>{esc(ORDERING_LABEL[ordering])} / {esc(emo)} <span class="muted">({n} cells)</span></h3>
     <div class="panel-outcomes">
       {outcome_pill("helped")} {outcomes.get("helped",0)}
       {outcome_pill("hurt")} {outcomes.get("hurt",0)}
@@ -588,11 +600,19 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
     methodology = """
 <p>Each <em>cell</em> is one (problem, ordering, emotion) triple compared against the same-ordering
 <code>control</code>. We compute a small set of mechanical features and apply a priority-ordered
-heuristic decision tree to attach a single high-level cause label per cell. Cells whose outcome did
-not flip and whose predicted number matches control are tagged <code>H_stylistic_only</code>; cells
-where the outcome flipped (helped / hurt) get the most diagnostic non-stylistic tag that fires.
-First-turn similarity is computed on <strong>Alice's</strong> first speaking turn (always — she's
-the steered agent), so the metric is symmetric across alice-first and bob-first orderings.</p>
+heuristic decision tree to attach a single high-level cause label per cell.</p>
+<p>Two roles in every conversation:</p>
+<ul>
+  <li><strong>Emotional agent</strong> — receives steering on the residual stream toward the target trait
+      (joy+, sadness+, anger+, etc.). This is the agent whose internal state is being perturbed.</li>
+  <li><strong>Stable agent</strong> — no steering applied; behaves as it would on the control. Acts as
+      the verifier / second opinion in the dialogue.</li>
+</ul>
+<p>The <em>ordering</em> says who opens the conversation — when the <strong>emotional agent</strong>
+opens (<em>emotional-first</em>) she sets the framing; when the <strong>stable agent</strong> opens
+(<em>stable-first</em>) the emotional agent reacts to a neutral framing. First-turn similarity for
+the cause heuristic is always anchored on the emotional agent's first speaking turn, so the metric
+is symmetric across the two orderings.</p>
 """
 
     # ---- Final HTML ----
@@ -605,7 +625,7 @@ the steered agent), so the metric is symmetric across alice-first and bob-first 
 </head>
 <body>
 <h1>n=200 cause analysis — task_sweep (first 200 GSM8K problems)</h1>
-<p class="muted">2 orderings (alice-first, bob-first) × 6 emotion conditions × 200 problems = 2,400 cells.
+<p class="muted">2 orderings (<strong>emotional-first</strong> = the steered <em>emotional agent</em> opens the conversation; <strong>stable-first</strong> = the unsteered <em>stable agent</em> opens) × 6 emotion conditions × 200 problems = 2,400 cells.
 Each cell is paired with the same-ordering <code>control</code> for diff-based cause attribution.</p>
 
 <nav class="top">{nav_html}</nav>
