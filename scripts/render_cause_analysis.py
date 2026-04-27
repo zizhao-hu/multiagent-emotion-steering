@@ -54,61 +54,90 @@ CAUSE_ORDER = [
 ]
 
 CAUSE_LABEL = {
-    "A_decomposition_shift": "A. Different opening move",
-    "B_arithmetic_divergence": "B. Same plan, different math",
-    "C_verification_bypass": "C. Stable agent gets gaslighted",
-    "D_disagreement_loop": "D. Contradiction spiral",
-    "E_early_termination": "E. Premature final answer",
-    "F_magnitude_error": "F. Faulty calculation (off by ~10×+)",
-    "G_semantic_reframing": "G. Reading the problem differently",
-    "I_extraction_artifact": "I. No clear final answer",
+    "A_decomposition_shift": "A. Emotional agent pivots to a new angle",
+    "B_arithmetic_divergence": "B. Same setup, computation lands elsewhere",
+    "C_verification_bypass": "C. Stable agent agrees without re-deriving",
+    "D_disagreement_loop": "D. Many number proposals, no convergence",
+    "E_early_termination": "E. Emotional agent commits to a final answer early",
+    "F_magnitude_error": "F. Calculation slip — answer off by 10×+",
+    "G_semantic_reframing": "G. Question re-read differently",
+    "I_extraction_artifact": "I. Right number in dialogue, never declared",
     "J_other": "J. Doesn't fit any pattern",
-    "H_stylistic_only": "H. Same answer, different tone",
+    "H_stylistic_only": "H. Same answer, different wording",
 }
 
+# Each blurb states: (a) the precise feature threshold that fires the label,
+# (b) which agent is doing what, (c) what the heuristic does NOT measure —
+# so the reader knows when the label is mechanism vs signature.
 CAUSE_BLURB = {
     "A_decomposition_shift": (
-        "The <strong>emotional agent</strong> starts solving the problem with a different approach — "
-        "different first move, different breakdown into sub-steps. "
-        "The whole conversation gets pushed down a new path from turn 1."
+        "The <strong>emotional agent</strong>'s first speaking turn shares <em>&lt;30% of "
+        "tokens</em> with control (Jaccard similarity). She approaches the problem "
+        "from a different angle — different operands picked first, different sub-step, "
+        "different way of breaking it down. "
+        "In <em>emotional-first</em> runs this is her conversation opener; in "
+        "<em>stable-first</em> runs it is her first <em>reply</em> (turn [02]) — "
+        "she pivots despite seeing the stable agent's neutral opener."
     ),
     "B_arithmetic_divergence": (
-        "Same overall plan as control, but the <strong>emotional agent</strong> does the arithmetic "
-        "differently. Same setup, different numbers come out at the end."
+        "<em>≥55% first-turn token overlap</em> with control — the emotional agent reads "
+        "the problem the same way and starts with the same setup — but the <em>final "
+        "answer differs</em>. The computation chain forks somewhere in the middle "
+        "(usually a single slip: swapped operand, missed term, off-by-one). The heuristic "
+        "does <em>not</em> tell us where the divergence happens, and does <em>not</em> "
+        "imply 'more thinking' or 'better logic' — read the transcript pair to see which "
+        "step went a different way."
     ),
     "C_verification_bypass": (
-        "The <strong>stable agent</strong> agrees with the emotional agent's answer without re-deriving "
-        "it — too much agreement, not enough checking. The stable agent gets talked into the "
-        "emotional agent's number."
+        "Emotion conversation is <em>shorter</em> than control AND has more agreement-pattern "
+        "matches (<code>agreed / correct / exactly / yes / that's right …</code>) AND the "
+        "outcome flipped. The <strong>stable agent</strong> takes the emotional agent's "
+        "number on faith instead of re-deriving it; the conversation wraps quickly. When "
+        "the emotional agent is right this helps; when she's wrong the stable agent "
+        "doesn't catch it. Colourful name, but the measurable mechanism is just: less "
+        "checking happened."
     ),
     "D_disagreement_loop": (
-        "The two agents get stuck contradicting each other. Lots of different numbers proposed, "
-        "no convergence, conversation hits the 10-turn cap without resolution."
+        "Conversation hits the <em>10-turn cap</em> AND ≥6 distinct numbers &gt;1 appear "
+        "across the transcript. The two agents keep proposing different totals and never "
+        "agree on one; the run terminates by exhaustion. No clean final answer."
     ),
     "E_early_termination": (
-        "The <strong>emotional agent</strong> commits to a final answer before the work is done. "
-        "Gives <code>Final answer: X</code> early, conversation stops, nobody catches the error."
+        "Conversation ends <em>≥2 turns earlier</em> than control AND the emotional agent "
+        "is wrong. She wrote <code>Final answer: X</code> (or equivalent) before the work "
+        "was done — usually after one or two proposals — so the stable agent had no chance "
+        "to push back."
     ),
     "F_magnitude_error": (
-        "The <strong>emotional agent</strong> made a calculation mistake severe enough that the "
-        "predicted answer is off from gold by ~10× or more — usually false logic in an intermediate "
-        "step (skipped a divide, double-counted a multiplier, mixed up units), not a stylistic slip. "
-        "The order-of-magnitude gap is the diagnostic signature; the underlying cause is bad arithmetic."
+        "The predicted answer is off from gold by <em>≥10×</em> (or ≤1/10×) — "
+        "order-of-magnitude gap. This is a <em>signature</em>, not a mechanism: a 10×+ "
+        "gap is almost always one identifiable arithmetic step (forgot to divide, "
+        "double-counted a multiplier, mixed grams with kg), but the heuristic doesn't say "
+        "<em>which</em> step. Read the transcript pair to see the specific slip."
     ),
     "G_semantic_reframing": (
-        "The <strong>emotional agent</strong> reads the problem differently — same words on the page, "
-        "but she interprets what's being asked in a new way. Different framing → different answer."
+        "First-turn token overlap is in the middle range (<em>30–55%</em>) — neither a "
+        "fresh angle (A) nor the same setup (B). Some words and numbers are shared with "
+        "control, but the emotional agent has interpreted <em>what the question is "
+        "asking</em> in a different way. Same operands in play, different quantity being "
+        "computed."
     ),
     "I_extraction_artifact": (
-        "The conversation never produced a clean <code>Final answer: X</code> or <code>\\boxed{X}</code>. "
-        "The gold number is mentioned somewhere but the parser couldn't pin down a definitive final answer."
+        "The gold number <em>does</em> appear in the last 2 turns of the dialogue, but "
+        "the extractor fell back to <code>last-number-in-tail</code> because there was no "
+        "<code>Final answer: X</code> / <code>\\boxed{X}</code> / <code>the answer is X</code> "
+        "declarative phrase. The agents reached the right number; they just never formally "
+        "announced it. Often a 10-turn-cap artifact."
     ),
     "J_other": (
-        "Mixed signals — none of the diagnostic features fired clearly. Flag for manual review."
+        "Mixed signals — none of the diagnostic features fired clearly. A small bucket "
+        "(n &lt; 20 across the whole sweep); flag for manual review."
     ),
     "H_stylistic_only": (
-        "Same final number as control, just different wording or emotional tone. "
-        "The emotion changed how the agent said it, not what she said."
+        "Same final number as control, just different wording or tone. Outcome unchanged. "
+        "The emotion changed how the agent said it, not what she said. Excluded from the "
+        "cause-ranking bars and the margin matrix by definition (no helped/hurt outcome "
+        "can come from this bucket)."
     ),
 }
 
