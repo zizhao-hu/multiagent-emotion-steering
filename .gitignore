@@ -18,6 +18,10 @@ wandb/
 runs/
 checkpoints/
 
+# Analysis artifacts (re-derivable from scripts/cause_analysis.py + render_*.py)
+analysis/*.json
+analysis/*.html
+
 # Vector cache (re-derivable from scripts/extract_vectors.py)
 vectors/cache/*.pt
 vectors/cache/*.npz
