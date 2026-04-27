@@ -42,29 +42,60 @@ CAUSE_ORDER = [
 ]
 
 CAUSE_LABEL = {
-    "A_decomposition_shift": "A. Decomposition shift",
-    "B_arithmetic_divergence": "B. Arithmetic divergence",
-    "C_verification_bypass": "C. Verification bypass",
-    "D_disagreement_loop": "D. Disagreement loop",
-    "E_early_termination": "E. Early termination",
-    "F_magnitude_error": "F. Magnitude error",
-    "G_semantic_reframing": "G. Semantic reframing",
-    "I_extraction_artifact": "I. Extraction artifact",
-    "J_other": "J. Other",
-    "H_stylistic_only": "H. Stylistic only",
+    "A_decomposition_shift": "A. Different opening move",
+    "B_arithmetic_divergence": "B. Same plan, different math",
+    "C_verification_bypass": "C. Stable agent gets gaslighted",
+    "D_disagreement_loop": "D. Contradiction spiral",
+    "E_early_termination": "E. Premature final answer",
+    "F_magnitude_error": "F. Decimal-shift slip",
+    "G_semantic_reframing": "G. Reading the problem differently",
+    "I_extraction_artifact": "I. No clear final answer",
+    "J_other": "J. Doesn't fit any pattern",
+    "H_stylistic_only": "H. Same answer, different tone",
 }
 
 CAUSE_BLURB = {
-    "A_decomposition_shift": "Alice opened the problem with very different sub-steps (first-turn token Jaccard < 0.30 vs control).",
-    "B_arithmetic_divergence": "Same plan as control (Jaccard ≥ 0.55) but landed on a different final number.",
-    "C_verification_bypass": "Outcome flipped, emotion ended sooner than control, and emotion has more agreement-words — Bob accepted without re-deriving.",
-    "D_disagreement_loop": "Hit the 10-turn cap with ≥ 6 distinct large numbers in play — agents oscillated.",
-    "E_early_termination": "Emotion stopped ≥ 2 turns earlier than control AND was wrong — premature halt.",
-    "F_magnitude_error": "Predicted is off from gold by ≥10× (decimal-shift / unit slip) and emotion is wrong.",
-    "G_semantic_reframing": "Moderate first-turn similarity (0.30–0.55), different answer — interpretation drifted.",
-    "I_extraction_artifact": "Gold appears in the transcript text but the extractor returned a different number.",
-    "J_other": "No diagnostic feature matched — flag for manual review.",
-    "H_stylistic_only": "Outcome unchanged and predicted number matched control — emotion only changed surface form.",
+    "A_decomposition_shift": (
+        "The <strong>emotional agent</strong> starts solving the problem with a different approach — "
+        "different first move, different breakdown into sub-steps. "
+        "The whole conversation gets pushed down a new path from turn 1."
+    ),
+    "B_arithmetic_divergence": (
+        "Same overall plan as control, but the <strong>emotional agent</strong> does the arithmetic "
+        "differently. Same setup, different numbers come out at the end."
+    ),
+    "C_verification_bypass": (
+        "The <strong>stable agent</strong> agrees with the emotional agent's answer without re-deriving "
+        "it — too much agreement, not enough checking. The stable agent gets talked into the "
+        "emotional agent's number."
+    ),
+    "D_disagreement_loop": (
+        "The two agents get stuck contradicting each other. Lots of different numbers proposed, "
+        "no convergence, conversation hits the 10-turn cap without resolution."
+    ),
+    "E_early_termination": (
+        "The <strong>emotional agent</strong> commits to a final answer before the work is done. "
+        "Gives <code>Final answer: X</code> early, conversation stops, nobody catches the error."
+    ),
+    "F_magnitude_error": (
+        "The math is off by a factor of ~10× or ~100× — a decimal-shift / unit slip, "
+        "like saying $400 when the answer is $40."
+    ),
+    "G_semantic_reframing": (
+        "The <strong>emotional agent</strong> reads the problem differently — same words on the page, "
+        "but she interprets what's being asked in a new way. Different framing → different answer."
+    ),
+    "I_extraction_artifact": (
+        "The conversation never produced a clean <code>Final answer: X</code> or <code>\\boxed{X}</code>. "
+        "The gold number is mentioned somewhere but the parser couldn't pin down a definitive final answer."
+    ),
+    "J_other": (
+        "Mixed signals — none of the diagnostic features fired clearly. Flag for manual review."
+    ),
+    "H_stylistic_only": (
+        "Same final number as control, just different wording or emotional tone. "
+        "The emotion changed how the agent said it, not what she said."
+    ),
 }
 
 # Cause colour palette (used for the bar segments).  Colourblind-aware-ish.
@@ -345,11 +376,13 @@ def build():
     for cause in CAUSE_ORDER:
         n = global_counts.get(cause, 0)
         pct = 100.0 * n / total if total else 0
+        # CAUSE_BLURB strings are author-trusted and contain inline HTML
+        # (<strong>, <code>); render them raw, do not html-escape.
         global_table_rows.append(
             f"<tr>"
             f'<td><span class="swatch" style="background:{CAUSE_COLOR[cause]}"></span>{esc(CAUSE_LABEL[cause])}</td>'
             f"<td>{n}</td><td>{pct:.1f}%</td>"
-            f"<td class=\"blurb\">{esc(CAUSE_BLURB[cause])}</td>"
+            f'<td class="blurb">{CAUSE_BLURB[cause]}</td>'
             f"</tr>"
         )
 
@@ -541,6 +574,14 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
 .div-row .centre { padding: 0 8px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #fafafa; }
 .div-row .cname { font-size: 12px; color: var(--fg); }
 .div-row .rank-stay { font-size: 10px; color: var(--muted); margin-left: 4px; }
+/* Tab UI */
+.tabs { display: flex; gap: 4px; margin: 0.6em 0 0; border-bottom: 2px solid var(--line); }
+.tab-btn { background: transparent; border: 1px solid var(--line); border-bottom: none; padding: 0.5em 1em; cursor: pointer; font: inherit; color: var(--muted); border-radius: 5px 5px 0 0; margin-bottom: -2px; }
+.tab-btn.active { background: var(--bg); color: var(--fg); border-bottom: 2px solid var(--bg); font-weight: 600; }
+.tab-btn:hover:not(.active) { background: var(--bg2); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+.legend-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; color: #1a1a1a; margin: 0 2px; }
 """
 
     # ---- Methodology blurb ----
@@ -569,6 +610,13 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
 
 <nav class="top">{nav_html}</nav>
 
+<div class="tabs" role="tablist">
+  <button class="tab-btn active" data-tab="summary" role="tab" aria-selected="true">Summary</button>
+  <button class="tab-btn" data-tab="examples" role="tab" aria-selected="false">Examples ({len(causes)} cells, click rows to expand)</button>
+</div>
+
+<div id="tab-summary" class="tab-content active">
+
 <section class="summary">
   <h2>Methodology</h2>
   {methodology}
@@ -594,12 +642,38 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
 
 <section class="ranking">
   <h2>Cause ranking — what each emotion changed most vs control</h2>
-  <p class="muted">For each (ordering, emotion), the 9 non-stylistic causes are ranked by how often they explain the change vs the same-ordering <code>control</code>. <code>H. Stylistic only</code> (no outcome change, same predicted) is excluded from these bars but reported in the header as <em>n cells changed / total</em>. Bars share an x-axis scale per ordering so emotions are comparable side-by-side.</p>
+  <p class="muted">Diverging bars: <span class="legend-pill" style="background:{OUTCOME_COLOR['helped']}">helped</span> (control wrong → emotion right) on the left, <span class="legend-pill" style="background:{OUTCOME_COLOR['hurt']}">hurt</span> (control right → emotion wrong) on the right. Causes sorted by total impact (helped + hurt) per emotion. Bars share an x-axis scale per ordering. <code>H. Same answer, different tone</code> (no outcome change, same predicted) is excluded.</p>
   {render_cause_ranking_section(by_panel, "alice")}
   {render_cause_ranking_section(by_panel, "bob")}
 </section>
 
+</div>
+
+<div id="tab-examples" class="tab-content">
+<p class="muted" style="margin-top:1em">Each panel below shows one (ordering, emotion) cell. Per-sample rows are flips only (helped + hurt) — click a row to expand the side-by-side control vs emotion transcripts.</p>
+
 {"".join(panel_html_parts)}
+
+</div>
+
+<script>
+(function() {{
+  const tabs = document.querySelectorAll('.tab-btn');
+  const contents = document.querySelectorAll('.tab-content');
+  tabs.forEach(t => t.addEventListener('click', () => {{
+    const target = t.dataset.tab;
+    tabs.forEach(b => {{
+      const active = b.dataset.tab === target;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    }});
+    contents.forEach(c => {{
+      c.classList.toggle('active', c.id === 'tab-' + target);
+    }});
+    window.scrollTo({{top: 0, behavior: 'instant'}});
+  }}));
+}})();
+</script>
 
 <footer style="margin-top:2em;color:var(--muted);font-size:12px">
   Generated from <code>analysis/causes_n200.json</code>; transcripts from
