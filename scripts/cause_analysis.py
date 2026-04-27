@@ -69,6 +69,27 @@ def first_speaker_turn(transcript: list[str], speaker: str) -> str:
     return ""
 
 
+def words_per_speaker(transcript: list[str]) -> dict[str, int]:
+    """Total word count per speaker across the whole transcript.
+
+    Words are whitespace-separated tokens after stripping the [NN] speaker:
+    prefix. Counts only labelled lines like "[01] alice: ...".
+    """
+    counts: dict[str, int] = {"alice": 0, "bob": 0, "other": 0}
+    for line in transcript:
+        m = re.match(r"\[\d+\]\s+(\w+):\s*(.*)", line)
+        if not m:
+            continue
+        spk = m.group(1).lower()
+        body = m.group(2)
+        wc = len(body.split())
+        if spk in counts:
+            counts[spk] += wc
+        else:
+            counts["other"] += wc
+    return counts
+
+
 def jaccard(a: str, b: str) -> float:
     ta = set(TOKEN_PAT.findall(a.lower()))
     tb = set(TOKEN_PAT.findall(b.lower()))
@@ -218,6 +239,11 @@ def features_for_cell(
     _, emo_strategy = improved_extract(emo_text)
     _, ctrl_strategy = improved_extract(ctrl_text)
 
+    # Conversation stats: word counts per agent role.
+    # alice = emotional agent (steered), bob = stable agent.
+    ctrl_words = words_per_speaker(ctrl.get("transcript", []))
+    emo_words = words_per_speaker(emo.get("transcript", []))
+
     return {
         "outcome_change": outcome,
         "control_correct": ctrl_correct,
@@ -228,6 +254,13 @@ def features_for_cell(
         "control_n_turns": ctrl.get("n_turns", 0),
         "emotion_n_turns": emo.get("n_turns", 0),
         "emotion_n_turns_minus_control": (emo.get("n_turns", 0) - ctrl.get("n_turns", 0)),
+        # Conversation word counts per role; alice = emotional, bob = stable.
+        "control_words_emotional": ctrl_words["alice"],
+        "control_words_stable": ctrl_words["bob"],
+        "emotion_words_emotional": emo_words["alice"],
+        "emotion_words_stable": emo_words["bob"],
+        "delta_words_emotional": emo_words["alice"] - ctrl_words["alice"],
+        "delta_words_stable": emo_words["bob"] - ctrl_words["bob"],
         "first_turn_jaccard": round(j, 3),
         "mag_ratio": magnitude_ratio(emo_pred, gold),
         "distinct_big_nums": distinct_big_numbers(emo.get("transcript", [])),

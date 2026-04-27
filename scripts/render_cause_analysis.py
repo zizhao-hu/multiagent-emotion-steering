@@ -59,7 +59,7 @@ CAUSE_LABEL = {
     "C_verification_bypass": "C. Stable agent gets gaslighted",
     "D_disagreement_loop": "D. Contradiction spiral",
     "E_early_termination": "E. Premature final answer",
-    "F_magnitude_error": "F. Decimal-shift slip",
+    "F_magnitude_error": "F. Faulty calculation (off by ~10×+)",
     "G_semantic_reframing": "G. Reading the problem differently",
     "I_extraction_artifact": "I. No clear final answer",
     "J_other": "J. Doesn't fit any pattern",
@@ -90,8 +90,10 @@ CAUSE_BLURB = {
         "Gives <code>Final answer: X</code> early, conversation stops, nobody catches the error."
     ),
     "F_magnitude_error": (
-        "The math is off by a factor of ~10× or ~100× — a decimal-shift / unit slip, "
-        "like saying $400 when the answer is $40."
+        "The <strong>emotional agent</strong> made a calculation mistake severe enough that the "
+        "predicted answer is off from gold by ~10× or more — usually false logic in an intermediate "
+        "step (skipped a divide, double-counted a multiplier, mixed up units), not a stylistic slip. "
+        "The order-of-magnitude gap is the diagnostic signature; the underlying cause is bad arithmetic."
     ),
     "G_semantic_reframing": (
         "The <strong>emotional agent</strong> reads the problem differently — same words on the page, "
@@ -343,12 +345,16 @@ def render_sample_row(rec: dict, ctrl_rec: dict | None, emo_rec: dict, problem: 
         "control_failure",
         "emotion_failure",
     ) if k in rec}
-    # Summary line
+    # Summary line — answer + conversation stats compact deltas.
+    we_d = rec.get("delta_words_emotional", 0)
+    ws_d = rec.get("delta_words_stable", 0)
     summary = (
         f'#{rec["idx"]}  '
         f'gold={esc(rec["gold"])}  '
         f'ctrl_pred={esc(rec["control_predicted"])}  emo_pred={esc(rec["emotion_predicted"])}  '
         f'(turns {rec["control_n_turns"]}→{rec["emotion_n_turns"]}, '
+        f'emo-w {rec.get("control_words_emotional",0)}→{rec.get("emotion_words_emotional",0)} ({we_d:+d}), '
+        f'stable-w {rec.get("control_words_stable",0)}→{rec.get("emotion_words_stable",0)} ({ws_d:+d}), '
         f'J={rec["first_turn_jaccard"]:.2f})'
     )
     feats_lines = [f"<dt>{esc(k)}</dt><dd>{esc(v)}</dd>" for k, v in feats.items()]
@@ -432,6 +438,55 @@ def build():
         f"<td>{100.0 * outcome_counts.get(o,0) / total:.1f}%</td></tr>"
         for o in ("helped", "hurt", "stay_correct", "stay_wrong")
     )
+
+    # ---- Conversation stats per (ordering, emotion) ----
+    # Aggregate over all 200 problems in each cell. Show mean turns + mean
+    # words per role, plus same-ordering control means and the delta.
+    convo_rows = []
+    for ordering in ORDERINGS:
+        ord_label = ORDERING_LABEL[ordering]
+        # Collect control means once per ordering
+        ctrl_recs = [r for r in causes if r["ordering"] == ordering and r["emotion"] == "joy+"]
+        # All records share the same control values per (ordering, problem),
+        # so any emotion's records expose control_n_turns / control_words_*.
+        if ctrl_recs:
+            ctrl_mean_turns = sum(r["control_n_turns"] for r in ctrl_recs) / len(ctrl_recs)
+            ctrl_mean_we = sum(r["control_words_emotional"] for r in ctrl_recs) / len(ctrl_recs)
+            ctrl_mean_ws = sum(r["control_words_stable"] for r in ctrl_recs) / len(ctrl_recs)
+        else:
+            ctrl_mean_turns = ctrl_mean_we = ctrl_mean_ws = 0.0
+        convo_rows.append(
+            f'<tr><td colspan="8"><strong>{esc(ord_label)}</strong> '
+            f'<span class="muted">— control baseline: {ctrl_mean_turns:.1f} turns, '
+            f'{ctrl_mean_we:.0f} emo-agent words, {ctrl_mean_ws:.0f} stable-agent words '
+            f'(per problem, mean over n=200)</span></td></tr>'
+        )
+        for emo in EMOTIONS:
+            sub = by_panel[(ordering, emo)]
+            if not sub:
+                continue
+            n = len(sub)
+            mean_turns = sum(r["emotion_n_turns"] for r in sub) / n
+            mean_we = sum(r["emotion_words_emotional"] for r in sub) / n
+            mean_ws = sum(r["emotion_words_stable"] for r in sub) / n
+            d_turns = mean_turns - ctrl_mean_turns
+            d_we = mean_we - ctrl_mean_we
+            d_ws = mean_ws - ctrl_mean_ws
+            convo_rows.append(
+                f"<tr>"
+                f"<td>{esc(emo)}</td>"
+                f"<td>{mean_turns:.1f}</td>"
+                f'<td class="{ "delta-pos" if d_turns > 0.05 else "delta-neg" if d_turns < -0.05 else "delta-zero" }">'
+                f"{d_turns:+.1f}</td>"
+                f"<td>{mean_we:.0f}</td>"
+                f'<td class="{ "delta-pos" if d_we > 1 else "delta-neg" if d_we < -1 else "delta-zero" }">'
+                f"{d_we:+.0f}</td>"
+                f"<td>{mean_ws:.0f}</td>"
+                f'<td class="{ "delta-pos" if d_ws > 1 else "delta-neg" if d_ws < -1 else "delta-zero" }">'
+                f"{d_ws:+.0f}</td>"
+                f"<td>{mean_we + mean_ws:.0f}</td>"
+                f"</tr>"
+            )
 
     # Per-emotion delta-acc summary (helped − hurt) per ordering
     helped_hurt_rows = []
@@ -624,6 +679,10 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 .legend-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; color: #1a1a1a; margin: 0 2px; }
+.delta-pos { color: #d62728; font-weight: 600; }
+.delta-neg { color: #2ca02c; font-weight: 600; }
+.delta-zero { color: var(--muted); }
+table.gtable td:nth-child(n+2):nth-child(-n+8) { text-align: right; }
 """
 
     # ---- Methodology blurb ----
@@ -687,6 +746,26 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
   <table class="gtable">
     <thead><tr><th>condition</th><th>helped</th><th>hurt</th><th>stay✓</th><th>stay✗</th><th>net Δ</th></tr></thead>
     <tbody>{"".join(helped_hurt_rows)}</tbody>
+  </table>
+
+  <h2>Conversation stats — turns and word counts vs control</h2>
+  <p class="muted">All values are means over the 200 problems in each cell. Δ is the difference between the emotion condition and the same-ordering control. The emotional agent is the steered one; the stable agent is unsteered.</p>
+  <table class="gtable">
+    <thead>
+      <tr>
+        <th rowspan="2">emotion</th>
+        <th colspan="2">turns / problem</th>
+        <th colspan="2">emo-agent words / problem</th>
+        <th colspan="2">stable-agent words / problem</th>
+        <th rowspan="2">total<br/>words</th>
+      </tr>
+      <tr>
+        <th>mean</th><th>Δ</th>
+        <th>mean</th><th>Δ</th>
+        <th>mean</th><th>Δ</th>
+      </tr>
+    </thead>
+    <tbody>{"".join(convo_rows)}</tbody>
   </table>
 </section>
 
