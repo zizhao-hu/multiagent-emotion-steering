@@ -36,6 +36,7 @@ REPO = Path(__file__).resolve().parent.parent
 ANA = REPO / "analysis"
 sys.path.insert(0, str(REPO / "scripts"))
 from analyze_cases import classify_failure  # noqa: E402
+from fix_extraction import improved_extract  # noqa: E402
 
 CONDITIONS = ["control", "joy+", "joy-", "sadness+", "anger+", "curiosity+", "surprise+"]
 EMOTIONS_NON_CTRL = [c for c in CONDITIONS if c != "control"]
@@ -90,19 +91,25 @@ def magnitude_ratio(pred, gold) -> float | None:
     return abs(p / g)
 
 
-def gold_in_transcript(transcript: list[str], gold) -> bool:
-    if gold is None:
+def gold_in_last_turns(transcript: list[str], gold, n_last: int = 2) -> bool:
+    """Did the gold number appear in the last `n_last` agent turns?
+
+    We restrict to the tail because that is where the answer should be
+    asserted; gold mentioned mid-reasoning and then abandoned does not
+    constitute an extraction artifact.
+    """
+    if gold is None or not transcript:
         return False
-    text = "\n".join(transcript).replace(",", "")
+    turn_lines = [ln for ln in transcript if re.match(r"\[\d+\]", ln)]
+    tail = "\n".join(turn_lines[-n_last:]).replace(",", "")
     try:
         gf = float(gold)
     except (TypeError, ValueError):
         return False
-    # match the gold integer as a whole token, allowing trailing decimals
     g_int = int(gf) if gf == int(gf) else None
     if g_int is not None:
-        return bool(re.search(rf"\b{g_int}(?:\.\d+)?\b", text))
-    return f"{gf}" in text
+        return bool(re.search(rf"\b{g_int}(?:\.\d+)?\b", tail))
+    return f"{gf}" in tail
 
 
 def distinct_big_numbers(transcript: list[str]) -> int:
@@ -124,7 +131,17 @@ def cause_label(features: dict) -> str:
     if mag is not None and (mag >= 9.5 or mag <= 1 / 9.5) and not features["emotion_correct"]:
         return "F_magnitude_error"
 
-    if features["gold_in_text"] and not features["emotion_correct"]:
+    # Extraction artifact = (a) gold IS asserted in the last 2 turns,
+    # (b) the agent did NOT conclude clearly (extractor had to fall back to
+    # last-number-in-tail because no "Final answer:", "\boxed{}", or
+    # "the answer is X" was present), and (c) the predicted answer differs
+    # from gold. Cases where the agent did write "Final answer: X" with X !=
+    # gold are NOT extraction artifacts — the agent reached a wrong conclusion.
+    if (
+        features["gold_in_last_turns"]
+        and not features["emotion_correct"]
+        and features["emotion_extract_strategy"] in ("fallback_last300", "no_match")
+    ):
         return "I_extraction_artifact"
 
     if features["emotion_n_turns_minus_control"] <= -2 and not features["emotion_correct"]:
@@ -196,6 +213,11 @@ def features_for_cell(
         else (ctrl_pred is None and emo_pred is None)
     )
 
+    # Re-extract via the strong extractor so we know which strategy fired —
+    # used to distinguish genuine extraction artifacts from agent-was-wrong cases.
+    _, emo_strategy = improved_extract(emo_text)
+    _, ctrl_strategy = improved_extract(ctrl_text)
+
     return {
         "outcome_change": outcome,
         "control_correct": ctrl_correct,
@@ -212,7 +234,9 @@ def features_for_cell(
         "agreement_words_emotion": len(AGREEMENT_PAT.findall(emo_text)),
         "agreement_words_control": len(AGREEMENT_PAT.findall(ctrl_text)),
         "disagreement_words_emotion": len(DISAGREEMENT_PAT.findall(emo_text)),
-        "gold_in_text": gold_in_transcript(emo.get("transcript", []), gold),
+        "gold_in_last_turns": gold_in_last_turns(emo.get("transcript", []), gold),
+        "emotion_extract_strategy": emo_strategy,
+        "control_extract_strategy": ctrl_strategy,
         "alice_trait_mean_emotion": round(a_mean, 4),
         "alice_trait_mean_control": round(a_mean_ctrl, 4),
         "bob_trait_drift_emotion": round(b_drift, 4),
@@ -221,9 +245,19 @@ def features_for_cell(
     }
 
 
+def _load_results(stem: str) -> dict:
+    """Prefer the post-fix results file; fall back to the raw snapshot."""
+    fixed = ANA / f"results_{stem}_fixed.json"
+    raw = ANA / f"snapshot_{stem}_n200.json"
+    p = fixed if fixed.exists() else raw
+    print(f"  using {p.name}")
+    return json.loads(p.read_text())
+
+
 def build():
-    alice = json.loads((ANA / "snapshot_alice_n200.json").read_text())
-    bob = json.loads((ANA / "snapshot_bob_n200.json").read_text())
+    print("loading data:")
+    alice = _load_results("alice")
+    bob = _load_results("bob")
     problems = json.loads((ANA / "snapshot_problems_n200.json").read_text())
     n = len(problems)
     print(f"loaded n={n} problems")

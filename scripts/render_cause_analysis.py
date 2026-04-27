@@ -107,6 +107,74 @@ def render_transcript(transcript: list[str]) -> str:
     return "\n".join(rows)
 
 
+def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
+    """For one ordering, show 6 ranked horizontal bar charts (one per emotion).
+
+    Each chart: bars are causes for that emotion, ordered by count descending,
+    with H_stylistic_only ('no change') excluded from the ranking but reported
+    as a count above the chart so the reader can see the proportion of cells
+    that actually changed.
+    """
+    # Find global max NON-stylistic count across all 6 emotions in this
+    # ordering, so all 6 bar charts share the same x-axis scale.
+    max_non_stylistic = 0
+    for emo in EMOTIONS:
+        sub = by_panel[(ordering, emo)]
+        for c in CAUSE_ORDER:
+            if c == "H_stylistic_only":
+                continue
+            n = sum(1 for r in sub if r["cause"] == c)
+            if n > max_non_stylistic:
+                max_non_stylistic = n
+    if max_non_stylistic == 0:
+        max_non_stylistic = 1
+
+    parts = [f'<h3 class="rank-ord-h">{esc(ordering)}-first</h3>']
+    for emo in EMOTIONS:
+        sub = by_panel[(ordering, emo)]
+        n_total = len(sub)
+        counts = Counter(r["cause"] for r in sub)
+        n_changed = n_total - counts.get("H_stylistic_only", 0)
+        outcomes = Counter(r["outcome_change"] for r in sub)
+        net = outcomes.get("helped", 0) - outcomes.get("hurt", 0)
+        net_class = "net-pos" if net > 0 else "net-neg" if net < 0 else "net-zero"
+
+        ranked = sorted(
+            ((c, counts.get(c, 0)) for c in CAUSE_ORDER if c != "H_stylistic_only"),
+            key=lambda kv: -kv[1],
+        )
+        rows = []
+        for c, cnt in ranked:
+            if cnt == 0:
+                continue
+            pct = 100.0 * cnt / n_total
+            width = 100.0 * cnt / max_non_stylistic
+            rows.append(
+                f'<div class="rank-row">'
+                f'<div class="rank-label">{esc(CAUSE_LABEL[c])}</div>'
+                f'<div class="rank-track">'
+                f'<div class="rank-fill" style="width:{width:.2f}%;background:{CAUSE_COLOR[c]}">'
+                f'<span class="rank-num">{cnt}</span>'
+                f'</div></div>'
+                f'<div class="rank-pct">{pct:.1f}%</div>'
+                f'</div>'
+            )
+        emo_anchor_link = f"#{ordering}-{emo.replace('+','p').replace('-','m')}"
+        parts.append(
+            f'<div class="rank-emo">'
+            f'<div class="rank-emo-head">'
+            f'<strong>{esc(emo)}</strong> '
+            f'<span class="muted">{n_changed}/{n_total} cells changed</span> · '
+            f'<span class="muted">{outcomes.get("helped",0)} helped, {outcomes.get("hurt",0)} hurt, '
+            f'<span class="{net_class}">net Δ {net:+d}</span></span> · '
+            f'<a class="jump" href="{emo_anchor_link}">jump to transcripts ↓</a>'
+            f'</div>'
+            f'<div class="rank-bars">{"".join(rows)}</div>'
+            f'</div>'
+        )
+    return "<div class=\"rank-ord\">" + "".join(parts) + "</div>"
+
+
 def cause_bar(counts: dict[str, int], total: int) -> str:
     if total == 0:
         return '<div class="cause-bar empty">no cells</div>'
@@ -155,13 +223,15 @@ def render_sample_row(rec: dict, ctrl_rec: dict | None, emo_rec: dict, problem: 
         "agreement_words_emotion",
         "agreement_words_control",
         "disagreement_words_emotion",
-        "gold_in_text",
+        "gold_in_last_turns",
+        "emotion_extract_strategy",
+        "control_extract_strategy",
         "alice_trait_mean_emotion",
         "alice_trait_mean_control",
         "bob_trait_drift_emotion",
         "control_failure",
         "emotion_failure",
-    )}
+    ) if k in rec}
     # Summary line
     summary = (
         f'#{rec["idx"]}  '
@@ -285,14 +355,17 @@ def build():
             # cause distribution stacked bar
             bar = cause_bar(counts, n)
 
-            # Build cause-count list as small chips
+            # Cause-count list, sorted by frequency descending (excluding the
+            # H_stylistic_only "no-change" bucket from the headline ranking).
+            ranked = sorted(
+                ((c, counts.get(c, 0)) for c in CAUSE_ORDER if counts.get(c, 0) > 0),
+                key=lambda kv: (kv[0] == "H_stylistic_only", -kv[1]),
+            )
             cause_chips = []
-            for c in CAUSE_ORDER:
-                if counts.get(c, 0) == 0:
-                    continue
+            for c, cnt in ranked:
                 cause_chips.append(
                     f'<span class="chip" style="border-left:6px solid {CAUSE_COLOR[c]}">'
-                    f'<strong>{counts[c]}</strong> {esc(CAUSE_LABEL[c])}</span>'
+                    f'<strong>{cnt}</strong> {esc(CAUSE_LABEL[c])}</span>'
                 )
             chips_html = " ".join(cause_chips)
 
@@ -396,6 +469,20 @@ dl.feats dt { color: var(--muted); }
 .t-bob { background: #f0f5ff; }
 .t-other { color: var(--muted); }
 table.gtable td.blurb { color: var(--muted); font-size: 12.5px; max-width: 600px; }
+section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); border-radius: 6px; }
+.rank-ord { margin: 0.6em 0; }
+.rank-ord-h { font-size: 1.05em; margin: 0.6em 0 0.4em; padding: 0.2em 0.6em; background: #2c3e50; color: #fff; border-radius: 4px; display: inline-block; }
+.rank-emo { margin: 0.5em 0 1em; padding: 0.5em 0.7em; background: #fff; border: 1px solid var(--line); border-radius: 5px; }
+.rank-emo-head { font-size: 13px; margin-bottom: 0.4em; }
+.rank-emo-head .jump { float: right; font-size: 12px; color: #1f77b4; text-decoration: none; }
+.rank-emo-head .jump:hover { text-decoration: underline; }
+.rank-bars { display: flex; flex-direction: column; gap: 3px; }
+.rank-row { display: grid; grid-template-columns: 200px 1fr 60px; align-items: center; gap: 8px; font-size: 12px; }
+.rank-label { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rank-track { background: #eee; border-radius: 2px; height: 16px; position: relative; overflow: hidden; }
+.rank-fill { height: 100%; min-width: 18px; display: flex; align-items: center; justify-content: flex-end; padding: 0 6px; box-sizing: border-box; }
+.rank-num { color: #fff; font-weight: 600; font-size: 11px; text-shadow: 0 1px 1px rgba(0,0,0,0.4); }
+.rank-pct { font-size: 11px; color: var(--muted); text-align: right; }
 """
 
     # ---- Methodology blurb ----
@@ -445,6 +532,13 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
     <thead><tr><th>condition</th><th>helped</th><th>hurt</th><th>stay✓</th><th>stay✗</th><th>net Δ</th></tr></thead>
     <tbody>{"".join(helped_hurt_rows)}</tbody>
   </table>
+</section>
+
+<section class="ranking">
+  <h2>Cause ranking — what each emotion changed most vs control</h2>
+  <p class="muted">For each (ordering, emotion), the 9 non-stylistic causes are ranked by how often they explain the change vs the same-ordering <code>control</code>. <code>H. Stylistic only</code> (no outcome change, same predicted) is excluded from these bars but reported in the header as <em>n cells changed / total</em>. Bars share an x-axis scale per ordering so emotions are comparable side-by-side.</p>
+  {render_cause_ranking_section(by_panel, "alice")}
+  {render_cause_ranking_section(by_panel, "bob")}
 </section>
 
 {"".join(panel_html_parts)}
