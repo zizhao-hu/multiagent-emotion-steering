@@ -288,6 +288,145 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
     return "<div class=\"rank-ord\">" + "".join(parts) + "</div>"
 
 
+def render_cause_matrix_section(by_panel: dict, ordering: str) -> str:
+    """Render a cause × emotion heatmap for one ordering.
+
+    Each cell shows the signed margin (hurt − helped) with:
+      - background color: red intensity for net-harmful, green for net-helpful,
+        white for zero (alpha proportional to |margin| / max_margin)
+      - main text: signed margin
+      - subscript: helped/hurt counts as h13·x8
+
+    Rows are causes sorted by total |margin| across emotions descending —
+    most volatile causes at the top. H_stylistic_only is excluded; any cause
+    with zero helped+hurt across all emotions is also dropped.
+    """
+    # Build (cause, emotion) -> {helped, hurt} table for this ordering.
+    table: dict[str, dict[str, dict[str, int]]] = defaultdict(
+        lambda: {emo: {"helped": 0, "hurt": 0} for emo in EMOTIONS}
+    )
+    for emo in EMOTIONS:
+        for r in by_panel[(ordering, emo)]:
+            cause = r["cause"]
+            if cause == "H_stylistic_only":
+                continue
+            oc = r["outcome_change"]
+            if oc in ("helped", "hurt"):
+                table[cause][emo][oc] += 1
+
+    # Drop causes with zero helped+hurt total across all emotions.
+    causes_present = [
+        c for c in CAUSE_ORDER
+        if c != "H_stylistic_only"
+        and any(table[c][e]["helped"] + table[c][e]["hurt"] for e in EMOTIONS)
+    ]
+
+    # Compute per-cell margin and global |margin| max for this ordering.
+    cell: dict[tuple[str, str], int] = {}
+    max_abs_margin = 0
+    for c in causes_present:
+        for e in EMOTIONS:
+            m = table[c][e]["hurt"] - table[c][e]["helped"]
+            cell[(c, e)] = m
+            if abs(m) > max_abs_margin:
+                max_abs_margin = abs(m)
+    max_abs_margin = max(max_abs_margin, 1)
+
+    # Sort rows by total |margin| across emotions, descending.
+    causes_sorted = sorted(
+        causes_present,
+        key=lambda c: -sum(abs(cell[(c, e)]) for e in EMOTIONS),
+    )
+
+    # Column totals (across causes) for the footer row.
+    col_totals = {e: {"helped": 0, "hurt": 0} for e in EMOTIONS}
+    for c in causes_present:
+        for e in EMOTIONS:
+            col_totals[e]["helped"] += table[c][e]["helped"]
+            col_totals[e]["hurt"] += table[c][e]["hurt"]
+
+    # Header row.
+    head_cells = (
+        '<th class="mtx-cause-h">cause</th>'
+        + "".join(f'<th class="mtx-emo-h">{esc(e)}</th>' for e in EMOTIONS)
+        + '<th class="mtx-row-tot">row Σ|m|</th>'
+    )
+
+    # Body rows.
+    body_rows = []
+    for c in causes_sorted:
+        row_abs_total = sum(abs(cell[(c, e)]) for e in EMOTIONS)
+        cells_html = []
+        for e in EMOTIONS:
+            m = cell[(c, e)]
+            h = table[c][e]["helped"]
+            x = table[c][e]["hurt"]
+            if h == 0 and x == 0:
+                cells_html.append('<td class="mtx-cell mtx-empty">·</td>')
+                continue
+            # Color: red for m>0 (net-harmful), green for m<0 (net-helpful),
+            # neutral for m==0 but cells with activity. Alpha = |m| / max.
+            alpha = abs(m) / max_abs_margin
+            if m > 0:
+                bg = f"rgba(214, 39, 40, {0.10 + 0.55 * alpha:.2f})"
+            elif m < 0:
+                bg = f"rgba(44, 160, 44, {0.10 + 0.55 * alpha:.2f})"
+            else:
+                bg = "rgba(180, 180, 180, 0.18)"
+            sign = "+" if m > 0 else ""
+            title = (
+                f"{ORDERING_LABEL[ordering]} / {e} / {CAUSE_LABEL[c]}: "
+                f"helped={h}, hurt={x}, margin={sign}{m}"
+            )
+            cells_html.append(
+                f'<td class="mtx-cell" style="background:{bg}" title="{esc(title)}">'
+                f'<div class="mtx-margin">{sign}{m}</div>'
+                f'<div class="mtx-hx">h{h}·x{x}</div>'
+                f'</td>'
+            )
+        body_rows.append(
+            f'<tr>'
+            f'<th class="mtx-row-h" style="border-left:4px solid {CAUSE_COLOR[c]}">'
+            f'{esc(CAUSE_LABEL[c])}</th>'
+            f'{"".join(cells_html)}'
+            f'<td class="mtx-row-tot">{row_abs_total}</td>'
+            f'</tr>'
+        )
+
+    # Footer row: column totals (sum of helped, sum of hurt, net margin).
+    footer_cells = []
+    for e in EMOTIONS:
+        h = col_totals[e]["helped"]
+        x = col_totals[e]["hurt"]
+        m = x - h
+        sign = "+" if m > 0 else ""
+        cls = "delta-pos" if m > 0 else "delta-neg" if m < 0 else "delta-zero"
+        footer_cells.append(
+            f'<td class="mtx-cell mtx-foot">'
+            f'<div class="mtx-margin {cls}">{sign}{m}</div>'
+            f'<div class="mtx-hx">h{h}·x{x}</div>'
+            f'</td>'
+        )
+    footer_row = (
+        '<tr class="mtx-foot-row">'
+        '<th class="mtx-row-h">column total (all causes)</th>'
+        + "".join(footer_cells)
+        + '<td class="mtx-row-tot">—</td>'
+        '</tr>'
+    )
+
+    return (
+        f'<div class="mtx-block">'
+        f'<h3 class="mtx-ord-h" title="{esc(ORDERING_DESC[ordering])}">'
+        f'{esc(ORDERING_LABEL[ordering])}</h3>'
+        f'<table class="mtx">'
+        f'<thead><tr>{head_cells}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}{footer_row}</tbody>'
+        f'</table>'
+        f'</div>'
+    )
+
+
 def cause_bar(counts: dict[str, int], total: int) -> str:
     if total == 0:
         return '<div class="cause-bar empty">no cells</div>'
@@ -683,6 +822,23 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
 .delta-neg { color: #2ca02c; font-weight: 600; }
 .delta-zero { color: var(--muted); }
 table.gtable td:nth-child(n+2):nth-child(-n+8) { text-align: right; }
+/* Cause × emotion margin matrix */
+section.matrix { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); border-radius: 6px; }
+.mtx-block { display: inline-block; vertical-align: top; margin: 0.4em 1em 0.6em 0; }
+.mtx-ord-h { font-size: 1.0em; margin: 0.2em 0 0.4em; padding: 0.2em 0.6em; background: #2c3e50; color: #fff; border-radius: 4px; display: inline-block; }
+table.mtx { border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+table.mtx th.mtx-cause-h { text-align: left; padding: 4px 8px; color: var(--muted); font-weight: 600; }
+table.mtx th.mtx-emo-h { padding: 4px 6px; font-weight: 600; min-width: 64px; text-align: center; background: var(--bg); border-radius: 3px; }
+table.mtx th.mtx-row-h { text-align: left; padding: 4px 8px 4px 10px; background: #fff; border-radius: 3px; max-width: 220px; min-width: 200px; font-weight: 500; }
+table.mtx td.mtx-cell { width: 64px; min-width: 64px; padding: 4px 4px; text-align: center; border-radius: 3px; vertical-align: middle; }
+table.mtx td.mtx-empty { color: #c8c8c8; background: #fafafa; }
+table.mtx .mtx-margin { font-weight: 700; font-size: 13px; color: #1a1a1a; line-height: 1.1; }
+table.mtx .mtx-hx { font-size: 10px; color: #555; line-height: 1.1; margin-top: 1px; }
+table.mtx td.mtx-row-tot { font-size: 11px; color: var(--muted); padding: 4px 8px; text-align: right; }
+table.mtx tr.mtx-foot-row th, table.mtx tr.mtx-foot-row td.mtx-cell { border-top: 2px solid #aaa; background: #fff; padding-top: 6px; }
+table.mtx td.mtx-foot { background: #fff; }
+.mtx-legend { font-size: 11px; color: var(--muted); margin: 0.4em 0 0.8em; }
+.mtx-legend .swatch-mtx { display: inline-block; width: 14px; height: 12px; vertical-align: middle; margin: 0 4px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.06); }
 """
 
     # ---- Methodology blurb ----
@@ -767,6 +923,16 @@ Each cell is paired with the same-ordering <code>control</code> for diff-based c
     </thead>
     <tbody>{"".join(convo_rows)}</tbody>
   </table>
+</section>
+
+<section class="matrix">
+  <h2>Cause × emotion fingerprint — margin matrix</h2>
+  <p class="mtx-legend">
+    For each <em>(cause, emotion)</em> pair, the cell shows the signed
+    <strong>margin = hurt − helped</strong>. <span class="swatch-mtx" style="background:rgba(214,39,40,0.45)"></span><strong>red</strong> = on net this emotion produced more <em>hurt</em> flips through this cause than <em>helped</em> flips (net-harmful via this mechanism); <span class="swatch-mtx" style="background:rgba(44,160,44,0.45)"></span><strong>green</strong> = net-helpful; <span class="swatch-mtx" style="background:rgba(180,180,180,0.18)"></span>neutral = the cause fired but helped/hurt are balanced. Color intensity is proportional to <code>|margin|</code> within each ordering. The small <code>h·x</code> line is helped/hurt counts. Rows are sorted by <code>row Σ|m|</code> (most volatile causes at top); <code>H. Same answer, different tone</code> is excluded by definition (no outcome change). The two matrices are independently scaled.
+  </p>
+  {render_cause_matrix_section(by_panel, "alice")}
+  {render_cause_matrix_section(by_panel, "bob")}
 </section>
 
 <section class="ranking">
