@@ -21,6 +21,9 @@ checkpoints/
 # Analysis artifacts (re-derivable from scripts/cause_analysis.py + render_*.py)
 analysis/*.json
 analysis/*.html
+# ...except the n=200 cause-analysis report — committed so a clone can
+# view it without re-running the full sweep + cause classifier.
+!analysis/n200_cause_analysis.html
 
 # Vector cache (re-derivable from scripts/extract_vectors.py)
 vectors/cache/*.pt
