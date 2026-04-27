@@ -88,18 +88,56 @@ def load_gsm8k(n: int, split: str = "test") -> list[dict]:
 def extract_answer(transcript_text: str) -> float | None:
     """Pull a numeric answer out of the dialogue.
 
-    Order of preference:
-      1. `final answer: X`  (case-insensitive, may have $/= surrounding)
-      2. `the answer is X`  (common LLM phrasing)
-      3. last number on the last 200 chars
+    Strategies in priority order — earlier matches override later ones, and
+    when a strategy matches multiple times we always take the LAST occurrence
+    (the conversation may have corrected itself). The original implementation
+    took the first "Final answer: X" and otherwise fell back to the last number
+    in the last 300 chars, which silently grabbed comparison numbers (e.g.
+    "$125 is higher than $96" → 96 instead of 125) and missed `\\boxed{X}`.
+
+      1. LAST `final answer: X` match (case-insensitive)
+      2. LAST `\\boxed{X}` match
+      3. LAST `the answer is X`
+      4. In the last 2 agent turns: comparison-claim "X is higher/lower/...
+         the correct/final/right" — picks X
+      5. In the last 2 agent turns: last `= X` at end of an arithmetic line
+      6. Fallback: last number in last 300 chars (original behavior)
     """
     text = transcript_text.replace(",", "")
-    m = re.search(r"[Ff]inal\s*answer\s*(?:is|:|=)?\s*\$?\s*(-?\d+(?:\.\d+)?)", text)
-    if m:
-        return float(m.group(1))
-    m = re.search(r"[Tt]he\s+answer\s+is\s*\$?\s*(-?\d+(?:\.\d+)?)", text)
-    if m:
-        return float(m.group(1))
+
+    matches = list(re.finditer(
+        r"[Ff]inal\s*answer\s*(?:is|:|=)?\s*\$?\s*(-?\d+(?:\.\d+)?)", text
+    ))
+    if matches:
+        return float(matches[-1].group(1))
+
+    matches = list(re.finditer(r"\\boxed\{\s*\$?\s*(-?\d+(?:\.\d+)?)\s*\}", text))
+    if matches:
+        return float(matches[-1].group(1))
+
+    matches = list(re.finditer(
+        r"[Tt]he\s+answer\s+is\s*\$?\s*(-?\d+(?:\.\d+)?)", text
+    ))
+    if matches:
+        return float(matches[-1].group(1))
+
+    turn_lines = [ln for ln in transcript_text.splitlines() if re.match(r"\[\d+\]", ln)]
+    last_two = "\n".join(turn_lines[-2:]).replace(",", "")
+
+    matches = list(re.finditer(
+        r"\$?\s*(-?\d+(?:\.\d+)?)\s*(?:[A-Za-z][^.\n]*)?\s+is\s+(?:higher|lower|greater|larger|smaller|more|less|bigger|the\s+(?:correct|final|right))",
+        last_two,
+        flags=re.IGNORECASE,
+    ))
+    if matches:
+        return float(matches[-1].group(1))
+
+    matches = list(re.finditer(
+        r"=\s*\$?\s*(-?\d+(?:\.\d+)?)\s*(?:\.|$|\s*$|\s+(?:so|which|this))", last_two
+    ))
+    if matches:
+        return float(matches[-1].group(1))
+
     nums = re.findall(r"-?\d+(?:\.\d+)?", text[-300:])
     if nums:
         return float(nums[-1])
