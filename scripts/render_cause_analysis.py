@@ -108,26 +108,34 @@ def render_transcript(transcript: list[str]) -> str:
 
 
 def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
-    """For one ordering, show 6 ranked horizontal bar charts (one per emotion).
+    """For one ordering, show 6 diverging bar charts (one per emotion).
 
-    Each chart: bars are causes for that emotion, ordered by count descending,
-    with H_stylistic_only ('no change') excluded from the ranking but reported
-    as a count above the chart so the reader can see the proportion of cells
-    that actually changed.
+    Each row: helped count grows leftward from the centre, hurt count grows
+    rightward, the cause label sits in the middle. stay_correct and stay_wrong
+    cells with the same cause label are reported as a small grey count after
+    the cause name (they did not flip the outcome). H_stylistic_only is
+    excluded from the chart entirely (no causal change).
+
+    Bars share the same x-axis scale across all 6 emotions in one ordering so
+    the panels are visually comparable side-by-side.
     """
-    # Find global max NON-stylistic count across all 6 emotions in this
-    # ordering, so all 6 bar charts share the same x-axis scale.
-    max_non_stylistic = 0
+    # Build per-(emo, cause) outcome counter and find the global max single-side
+    # bar (helped or hurt) across this ordering, so we can scale all bars to a
+    # common pixel width.
+    per_emo: dict[str, dict[str, Counter]] = {}
+    max_side = 0
     for emo in EMOTIONS:
         sub = by_panel[(ordering, emo)]
-        for c in CAUSE_ORDER:
-            if c == "H_stylistic_only":
+        emo_counter: dict[str, Counter] = defaultdict(Counter)
+        for r in sub:
+            if r["cause"] == "H_stylistic_only":
                 continue
-            n = sum(1 for r in sub if r["cause"] == c)
-            if n > max_non_stylistic:
-                max_non_stylistic = n
-    if max_non_stylistic == 0:
-        max_non_stylistic = 1
+            emo_counter[r["cause"]][r["outcome_change"]] += 1
+        for cause, oc in emo_counter.items():
+            max_side = max(max_side, oc.get("helped", 0), oc.get("hurt", 0))
+        per_emo[emo] = emo_counter
+    if max_side == 0:
+        max_side = 1
 
     parts = [f'<h3 class="rank-ord-h">{esc(ordering)}-first</h3>']
     for emo in EMOTIONS:
@@ -139,27 +147,60 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
         net = outcomes.get("helped", 0) - outcomes.get("hurt", 0)
         net_class = "net-pos" if net > 0 else "net-neg" if net < 0 else "net-zero"
 
+        emo_counter = per_emo[emo]
+        # Order causes by total impact (helped + hurt) descending. Ties broken
+        # by hurt count (more disruptive shown first), then by alphabetical key.
         ranked = sorted(
-            ((c, counts.get(c, 0)) for c in CAUSE_ORDER if c != "H_stylistic_only"),
-            key=lambda kv: -kv[1],
+            emo_counter.items(),
+            key=lambda kv: (
+                -(kv[1].get("helped", 0) + kv[1].get("hurt", 0)),
+                -kv[1].get("hurt", 0),
+                kv[0],
+            ),
         )
+
         rows = []
-        for c, cnt in ranked:
-            if cnt == 0:
+        for cause, oc in ranked:
+            helped = oc.get("helped", 0)
+            hurt = oc.get("hurt", 0)
+            stay = oc.get("stay_correct", 0) + oc.get("stay_wrong", 0)
+            if helped == 0 and hurt == 0 and stay == 0:
                 continue
-            pct = 100.0 * cnt / n_total
-            width = 100.0 * cnt / max_non_stylistic
-            rows.append(
-                f'<div class="rank-row">'
-                f'<div class="rank-label">{esc(CAUSE_LABEL[c])}</div>'
-                f'<div class="rank-track">'
-                f'<div class="rank-fill" style="width:{width:.2f}%;background:{CAUSE_COLOR[c]}">'
-                f'<span class="rank-num">{cnt}</span>'
-                f'</div></div>'
-                f'<div class="rank-pct">{pct:.1f}%</div>'
-                f'</div>'
+            helped_w = 100.0 * helped / max_side
+            hurt_w = 100.0 * hurt / max_side
+            stay_note = (
+                f' <span class="rank-stay" title="{stay} cell(s) with this cause but '
+                f'outcome unchanged (stay_correct/stay_wrong)">+{stay}</span>'
+                if stay > 0 else ""
             )
+            rows.append(f"""
+<div class="div-row">
+  <div class="side helped-side">
+    <div class="bar helped-bar" style="width:{helped_w:.2f}%;background:{OUTCOME_COLOR['helped']}">
+      {f'<span class="bar-num">{helped}</span>' if helped > 0 else ''}
+    </div>
+  </div>
+  <div class="centre" style="border-left:4px solid {CAUSE_COLOR[cause]}">
+    <span class="cname">{esc(CAUSE_LABEL[cause])}</span>{stay_note}
+  </div>
+  <div class="side hurt-side">
+    <div class="bar hurt-bar" style="width:{hurt_w:.2f}%;background:{OUTCOME_COLOR['hurt']}">
+      {f'<span class="bar-num">{hurt}</span>' if hurt > 0 else ''}
+    </div>
+  </div>
+</div>
+""")
+
         emo_anchor_link = f"#{ordering}-{emo.replace('+','p').replace('-','m')}"
+        if not rows:
+            body = '<p class="muted" style="padding:0.4em">no changed cells</p>'
+        else:
+            body = (
+                '<div class="div-header"><div class="hdr-l">helped (ctrl wrong → emo right)</div>'
+                '<div class="hdr-c">cause</div>'
+                '<div class="hdr-r">hurt (ctrl right → emo wrong)</div></div>'
+                + "".join(rows)
+            )
         parts.append(
             f'<div class="rank-emo">'
             f'<div class="rank-emo-head">'
@@ -169,7 +210,7 @@ def render_cause_ranking_section(by_panel: dict, ordering: str) -> str:
             f'<span class="{net_class}">net Δ {net:+d}</span></span> · '
             f'<a class="jump" href="{emo_anchor_link}">jump to transcripts ↓</a>'
             f'</div>'
-            f'<div class="rank-bars">{"".join(rows)}</div>'
+            f'<div class="div-bars">{body}</div>'
             f'</div>'
         )
     return "<div class=\"rank-ord\">" + "".join(parts) + "</div>"
@@ -483,6 +524,23 @@ section.ranking { margin: 1.5em 0; padding: 1em 1.2em; background: var(--bg2); b
 .rank-fill { height: 100%; min-width: 18px; display: flex; align-items: center; justify-content: flex-end; padding: 0 6px; box-sizing: border-box; }
 .rank-num { color: #fff; font-weight: 600; font-size: 11px; text-shadow: 0 1px 1px rgba(0,0,0,0.4); }
 .rank-pct { font-size: 11px; color: var(--muted); text-align: right; }
+/* Diverging (helped left, hurt right) bar chart */
+.div-bars { font-size: 12px; }
+.div-header { display: grid; grid-template-columns: 1fr 220px 1fr; align-items: center; padding: 0 0.4em 0.3em; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.div-header .hdr-l { text-align: right; padding-right: 8px; }
+.div-header .hdr-c { text-align: center; }
+.div-header .hdr-r { text-align: left; padding-left: 8px; }
+.div-row { display: grid; grid-template-columns: 1fr 220px 1fr; align-items: center; gap: 0; padding: 1px 0; }
+.div-row .side { height: 18px; display: flex; align-items: center; }
+.div-row .helped-side { justify-content: flex-end; padding-right: 0; }
+.div-row .hurt-side { justify-content: flex-start; padding-left: 0; }
+.div-row .bar { height: 100%; min-width: 0; display: flex; align-items: center; padding: 0 6px; box-sizing: border-box; border-radius: 2px; }
+.div-row .helped-bar { justify-content: flex-start; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.div-row .hurt-bar { justify-content: flex-end; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.div-row .bar-num { color: #1a1a1a; font-weight: 600; font-size: 11px; }
+.div-row .centre { padding: 0 8px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #fafafa; }
+.div-row .cname { font-size: 12px; color: var(--fg); }
+.div-row .rank-stay { font-size: 10px; color: var(--muted); margin-left: 4px; }
 """
 
     # ---- Methodology blurb ----
