@@ -56,6 +56,7 @@ def extraction_auc_loo(
     trait: TraitSpec,
     layer: int,
     device: str = "cpu",
+    readout: str = "last",
 ) -> ExtractionAUC:
     """Leave-one-out extraction AUC for a single trait.
 
@@ -64,13 +65,15 @@ def extraction_auc_loo(
         pos_score_i = <h_pos_i, v_{-i}>
         neg_score_i = <h_neg_i, v_{-i}>
     Returns AUC computed over {pos_score_i}, {neg_score_i}.
+
+    `readout` is forwarded to `_last_token_hidden` ("last" or "mean").
     """
     # Cache all activations once; then the LOO loop is just matrix ops.
     pos_acts = torch.stack(
-        [_last_token_hidden(model, tokenizer, p["pos"], layer, device) for p in trait.pairs]
+        [_last_token_hidden(model, tokenizer, p["pos"], layer, device, readout) for p in trait.pairs]
     )
     neg_acts = torch.stack(
-        [_last_token_hidden(model, tokenizer, p["neg"], layer, device) for p in trait.pairs]
+        [_last_token_hidden(model, tokenizer, p["neg"], layer, device, readout) for p in trait.pairs]
     )
     K = pos_acts.shape[0]
 
@@ -99,8 +102,9 @@ def extraction_auc_all(
     traits: dict[str, TraitSpec],
     layer: int,
     device: str = "cpu",
+    readout: str = "last",
 ) -> dict[str, ExtractionAUC]:
     return {
-        name: extraction_auc_loo(model, tokenizer, spec, layer=layer, device=device)
+        name: extraction_auc_loo(model, tokenizer, spec, layer=layer, device=device, readout=readout)
         for name, spec in traits.items()
     }

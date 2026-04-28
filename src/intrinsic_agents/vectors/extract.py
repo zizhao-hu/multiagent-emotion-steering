@@ -43,12 +43,29 @@ def _last_token_hidden(
     prompt: str,
     layer: int,
     device: str,
+    readout: str = "last",
 ) -> torch.Tensor:
+    """Single forward pass; return one residual-stream activation vector.
+
+    readout = "last" → activation at the final prompt token (Anthropic default)
+    readout = "mean" → mean-pool the activation across all prompt tokens
+
+    Mean-pooling tends to be more robust when the trait signal is distributed
+    across multiple words rather than concentrated at the final token (e.g.
+    emotion descriptors that appear earlier in the prompt).
+    """
     ids = tokenizer(prompt, return_tensors="pt").to(device)
     with torch.no_grad():
         out = model(**ids, output_hidden_states=True, use_cache=False)
-    # hidden_states[layer] has shape (1, seq_len, hidden_dim); take last token.
-    return out.hidden_states[layer][0, -1].float().cpu()
+    # hidden_states[layer] has shape (1, seq_len, hidden_dim).
+    h = out.hidden_states[layer][0]  # (seq_len, hidden_dim)
+    if readout == "last":
+        v = h[-1]
+    elif readout == "mean":
+        v = h.mean(dim=0)
+    else:
+        raise ValueError(f"unknown readout: {readout!r} (expected 'last' or 'mean')")
+    return v.float().cpu()
 
 
 def extract_trait_vector(
@@ -57,11 +74,12 @@ def extract_trait_vector(
     trait: TraitSpec,
     layer: int,
     device: str = "cpu",
+    readout: str = "last",
 ) -> torch.Tensor:
     pos_acts, neg_acts = [], []
     for pair in trait.pairs:
-        pos_acts.append(_last_token_hidden(model, tokenizer, pair["pos"], layer, device))
-        neg_acts.append(_last_token_hidden(model, tokenizer, pair["neg"], layer, device))
+        pos_acts.append(_last_token_hidden(model, tokenizer, pair["pos"], layer, device, readout))
+        neg_acts.append(_last_token_hidden(model, tokenizer, pair["neg"], layer, device, readout))
     diff = torch.stack(pos_acts).mean(0) - torch.stack(neg_acts).mean(0)
     return diff / (diff.norm() + 1e-8)
 

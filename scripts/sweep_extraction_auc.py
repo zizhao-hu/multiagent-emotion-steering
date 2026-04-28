@@ -37,6 +37,10 @@ def main() -> None:
     p.add_argument("--traits-yaml", default=str(DEFAULT_TRAITS))
     p.add_argument("--out-dir", required=True)
     p.add_argument("--target-auc", type=float, default=0.85)
+    p.add_argument("--readout", default="last", choices=["last", "mean"],
+                   help="residual-stream readout point: 'last' = last prompt token "
+                   "(Anthropic default), 'mean' = mean-pool over all prompt tokens "
+                   "(more robust when the trait signal is distributed)")
     args = p.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,10 +58,12 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"readout: {args.readout}", flush=True)
     summary: dict[int, dict[str, float]] = {}
     for L in args.layers:
-        print(f"\n=== layer {L} ===", flush=True)
-        results = extraction_auc_all(model, tok, traits, layer=L, device=device)
+        print(f"\n=== layer {L} (readout={args.readout}) ===", flush=True)
+        results = extraction_auc_all(model, tok, traits, layer=L, device=device,
+                                     readout=args.readout)
 
         passes = 0
         per_trait = {}
@@ -69,11 +75,12 @@ def main() -> None:
             print(f"  {name:<16} {r.auc:>6.3f}  {mark}", flush=True)
         print(f"  -> {passes}/{len(results)} pass AUC >= {args.target_auc}", flush=True)
 
-        out_path = out_dir / f"extraction_auc_layer{L}.json"
+        out_path = out_dir / f"extraction_auc_layer{L}_{args.readout}.json"
         out_path.write_text(json.dumps({
             "model": args.model,
             "layer": L,
             "dtype": args.dtype,
+            "readout": args.readout,
             "target_auc": args.target_auc,
             "results": {
                 name: {
