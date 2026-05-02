@@ -9,10 +9,10 @@
 #SBATCH --output=/project2/jessetho_1732/zizhaoh/multiagent-emotion-steering/logs/%x_%j.log
 #SBATCH --error=/project2/jessetho_1732/zizhaoh/multiagent-emotion-steering/logs/%x_%j.log
 
-# Emotion-vector steering on GPQA-Diamond + HumanEval for Qwen2.5-7B-Instruct.
-# Layer choice: L14 (mid-stack of 28). Confirm against the AUC sweep
-# in experiments/09_qwen25_7b_sweep before relying on this number — switch
-# the --layer flag to whichever has the highest mean emotion AUC.
+# Emotion-vector steering on MMLU-Pro STEM + HumanEval for Qwen2.5-7B-Instruct.
+# Layer choice: L14 (mid-stack of 28). The L24 sweep result was best for
+# emotion AUC (0.938) but L14 keeps more downstream runway for steering
+# while still passing AUC > 0.85 on every emotion trait except surprise.
 #
 # Cells: 5 emotions x 5 alphas x 2 benchmarks = 50 cells. Walltime budget
 # matches Llama (~6-7 h actual, 8 h SBATCH cushion).
@@ -41,8 +41,8 @@ python scripts/steer_benchmark.py \
     --vector-cache vectors/cache \
     --traits joy sadness anger curiosity surprise \
     --alphas -4 -2 0 2 4 \
-    --benchmarks gpqa humaneval \
-    --n-gpqa 100 \
+    --benchmarks mmlu_pro humaneval \
+    --n-mmlu-pro 100 \
     --n-humaneval 50 \
     --dtype bf16 \
     --out-dir runs/10_steering_benchmarks/qwen25_7b_layer14

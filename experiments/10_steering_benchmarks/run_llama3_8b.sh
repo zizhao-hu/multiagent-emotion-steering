@@ -9,12 +9,14 @@
 #SBATCH --output=/project2/jessetho_1732/zizhaoh/multiagent-emotion-steering/logs/%x_%j.log
 #SBATCH --error=/project2/jessetho_1732/zizhaoh/multiagent-emotion-steering/logs/%x_%j.log
 
-# Emotion-vector steering on advanced science (GPQA-Diamond) and coding
-# (HumanEval) benchmarks. Uses cached Llama-3.1-8B-Instruct vectors at L15.
+# Emotion-vector steering on advanced science (MMLU-Pro STEM split) and
+# coding (HumanEval) benchmarks. Uses cached Llama-3.1-8B-Instruct vectors
+# at L15. The L30 sweep result has slightly higher emotion AUC (0.937 vs
+# 0.914) but L15 is mid-stack and has more downstream runway for steering.
 #
 # Cells: 5 emotions x 5 alphas x 2 benchmarks = 50 cells.
-# Per-task budget: ~256 tokens GPQA, ~512 tokens HumanEval.
-# 100 GPQA + 50 HumanEval per cell -> ~15-20 min per (trait,alpha,bench),
+# Per-task budget: ~256 tokens MMLU-Pro, ~512 tokens HumanEval.
+# 100 MMLU-Pro + 50 HumanEval per cell -> ~15-20 min per (trait,alpha,bench),
 # total ~6-7 h on A6000. 8 h walltime is the cushion.
 
 set -eo pipefail
@@ -44,8 +46,8 @@ python scripts/steer_benchmark.py \
     --vector-cache vectors/cache \
     --traits joy sadness anger curiosity surprise \
     --alphas -4 -2 0 2 4 \
-    --benchmarks gpqa humaneval \
-    --n-gpqa 100 \
+    --benchmarks mmlu_pro humaneval \
+    --n-mmlu-pro 100 \
     --n-humaneval 50 \
     --dtype bf16 \
     --out-dir runs/10_steering_benchmarks/llama3_8b_layer15

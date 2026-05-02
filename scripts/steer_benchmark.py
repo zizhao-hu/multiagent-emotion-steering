@@ -35,8 +35,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from intrinsic_agents.benchmarks import (
     load_gpqa_diamond,
     load_humaneval,
+    load_mmlu_pro,
     score_gpqa,
     score_humaneval,
+    score_mmlu_pro,
 )
 from intrinsic_agents.vectors.steering import SteeringHarness
 
@@ -116,13 +118,16 @@ def main() -> None:
                    default=["joy", "sadness", "anger", "curiosity", "surprise"])
     p.add_argument("--alphas", type=float, nargs="+",
                    default=[-4.0, -2.0, 0.0, 2.0, 4.0])
-    p.add_argument("--benchmarks", nargs="+", default=["gpqa", "humaneval"],
-                   choices=["gpqa", "humaneval"])
+    p.add_argument("--benchmarks", nargs="+", default=["mmlu_pro", "humaneval"],
+                   choices=["gpqa", "mmlu_pro", "humaneval"])
     p.add_argument("--n-gpqa", type=int, default=100,
-                   help="number of GPQA-Diamond tasks (max ~198)")
+                   help="number of GPQA-Diamond tasks (max ~198, gated dataset)")
+    p.add_argument("--n-mmlu-pro", type=int, default=100,
+                   help="number of MMLU-Pro STEM tasks (filtered to science categories)")
     p.add_argument("--n-humaneval", type=int, default=50,
                    help="number of HumanEval tasks (max 164)")
     p.add_argument("--max-new-tokens-gpqa", type=int, default=256)
+    p.add_argument("--max-new-tokens-mmlu-pro", type=int, default=256)
     p.add_argument("--max-new-tokens-humaneval", type=int, default=512)
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     p.add_argument("--out-dir", required=True)
@@ -154,6 +159,13 @@ def main() -> None:
             load_gpqa_diamond(n=args.n_gpqa, seed=args.seed),
             score_gpqa,
             args.max_new_tokens_gpqa,
+        )
+    if "mmlu_pro" in args.benchmarks:
+        print(f"loading MMLU-Pro STEM ({args.n_mmlu_pro} tasks)...", flush=True)
+        benches["mmlu_pro"] = (
+            load_mmlu_pro(n=args.n_mmlu_pro, seed=args.seed),
+            score_mmlu_pro,
+            args.max_new_tokens_mmlu_pro,
         )
     if "humaneval" in args.benchmarks:
         print(f"loading HumanEval ({args.n_humaneval} tasks)...", flush=True)
