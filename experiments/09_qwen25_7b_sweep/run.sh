@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=qwen25_7b_auc_sweep
 #SBATCH --partition=nlp_hiprio
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:rtxa6000:1
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
 #SBATCH --time=03:00:00
