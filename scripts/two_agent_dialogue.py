@@ -93,20 +93,43 @@ def project_text_onto_vector(
     layer: int,
     vector: torch.Tensor,
     device: str,
+    persona: str,
+    scenario: str,
 ) -> float:
-    """Forward `text` through unsteered model; return mean residual-stream
-    projection onto `vector` at layer L, averaged across tokens.
+    """Forward `text` as an assistant reply through the unsteered model; return
+    L-layer residual projection onto `vector` at the last assistant token.
 
-    "Mean" rather than "last": for a free-form output, the trait signal can be
-    spread across the whole reply, not just the last token. Mean-pool gives a
-    more honest estimate of how much the text as a whole carries the trait.
+    The trait vectors were extracted at L last-token of an instruction-style
+    chat prompt where the next token is the assistant's reply. To stay in the
+    same geometry on read-back, we wrap `text` as the assistant turn of a
+    chat-template input (system=persona, user=scenario, assistant=text) and
+    read at the last assistant token. Raw-text mean-pool would put us in a
+    different residual subspace and wash out signal.
     """
     if not text.strip():
         return 0.0
-    ids = tok(text, return_tensors="pt", truncation=True, max_length=512).to(device)
+    if hasattr(tok, "apply_chat_template") and tok.chat_template:
+        prompt = tok.apply_chat_template(
+            [
+                {"role": "system", "content": persona},
+                {"role": "user", "content": f"Scenario: {scenario}"},
+                {"role": "assistant", "content": text},
+            ],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+    else:
+        prompt = f"{persona}\n\nScenario: {scenario}\n\nAssistant: {text}"
+    ids = tok(prompt, return_tensors="pt", truncation=True, max_length=2048).to(device)
     out = model(**ids, output_hidden_states=True, use_cache=False)
     h = out.hidden_states[layer][0]  # (seq, hidden)
-    proj = (h.float() @ vector).mean()
+    # Many chat templates append a trailing EOT/end token after the assistant
+    # message. The trait signal we care about sits on the last assistant
+    # *content* token, which is typically 1-2 positions before the absolute end.
+    # Reading position -1 (the very last token of the formatted string) tends
+    # to be the EOT itself; -2 is closer to the content edge.
+    last_idx = -2 if h.shape[0] >= 2 else -1
+    proj = (h[last_idx].float() @ vector)
     return float(proj.item())
 
 
@@ -171,31 +194,55 @@ def generate_turn(
 
 
 def verify_steering(
-    model, tok, harness, vector, alpha, scenario, layer, device, max_new_tokens, temperature, threshold,
+    model, tok, harness, vector, alphas, scenario, layer, device, max_new_tokens, temperature, threshold,
 ) -> tuple[bool, dict]:
-    """Generate one steered + one unsteered Alice utterance, project both back
-    through the unsteered model, and check if the steered text loads more
-    heavily on the trait direction than the unsteered text.
+    """Sweep `alphas`, pick the one with the largest steered-vs-baseline delta.
+
+    For each alpha, generate one Alice utterance with the hook and one without,
+    project both back through the unsteered model wrapped as assistant turns,
+    and record the projection delta. The alpha with the maximum positive delta
+    is selected for downstream dialogue. Verification passes iff that maximum
+    delta meets the threshold.
+
+    Sweeping rather than committing to a single alpha matters: we saw on
+    Llama-3.1-8B that alpha=4 can overshoot (output text loads *less* on the
+    target trait than baseline because steering distorts word choice rather
+    than coloring it). A small alpha may steer cleanly while a large one
+    breaks the model's writing.
     """
-    # Probe Alice with no transcript yet — pure first-utterance generation.
     prompt = chat_format_for_speaker(tok, ALICE_PERSONA, scenario, [], "alice")
 
     base_text = generate_turn(model, tok, prompt, harness, vector, 0.0, max_new_tokens, temperature)
-    steer_text = generate_turn(model, tok, prompt, harness, vector, alpha, max_new_tokens, temperature)
+    base_proj = project_text_onto_vector(
+        model, tok, base_text, layer, vector, device, ALICE_PERSONA, scenario,
+    )
 
-    base_proj = project_text_onto_vector(model, tok, base_text, layer, vector, device)
-    steer_proj = project_text_onto_vector(model, tok, steer_text, layer, vector, device)
-    delta = steer_proj - base_proj
-    passed = delta >= threshold
+    sweep: list[dict] = []
+    for alpha in alphas:
+        steer_text = generate_turn(model, tok, prompt, harness, vector, alpha, max_new_tokens, temperature)
+        steer_proj = project_text_onto_vector(
+            model, tok, steer_text, layer, vector, device, ALICE_PERSONA, scenario,
+        )
+        sweep.append({
+            "alpha": alpha,
+            "steered_text": steer_text,
+            "steered_projection": steer_proj,
+            "delta": steer_proj - base_proj,
+        })
+
+    best = max(sweep, key=lambda s: s["delta"])
+    passed = best["delta"] >= threshold
 
     return passed, {
-        "alpha": alpha,
+        "alphas_tried": alphas,
+        "alpha_chosen": best["alpha"],
         "threshold": threshold,
         "baseline_text": base_text,
-        "steered_text": steer_text,
         "baseline_projection": base_proj,
-        "steered_projection": steer_proj,
-        "delta": delta,
+        "best_steered_text": best["steered_text"],
+        "best_steered_projection": best["steered_projection"],
+        "best_delta": best["delta"],
+        "sweep": sweep,
         "passed": passed,
     }
 
@@ -223,7 +270,9 @@ def run_dialogue(
         prompt = chat_format_for_speaker(tok, persona, scenario, transcript, speaker)
         text = generate_turn(model, tok, prompt, harness, vector, speaker_alpha, max_new_tokens, temperature)
 
-        proj = project_text_onto_vector(model, tok, text, layer, vector, device)
+        proj = project_text_onto_vector(
+            model, tok, text, layer, vector, device, persona, scenario,
+        )
         transcript.append(Turn(
             idx=turn, speaker=speaker, steered=(speaker_alpha != 0.0),
             alpha=speaker_alpha, text=text, proj_target=proj,
@@ -239,16 +288,18 @@ def main() -> None:
     p.add_argument("--layer", type=int, required=True)
     p.add_argument("--vector-cache", default=str(REPO_ROOT / "vectors" / "cache"))
     p.add_argument("--trait", required=True, help="Single trait name (e.g. joy)")
-    p.add_argument("--alpha", type=float, default=4.0,
-                   help="Steering magnitude on Alice. Sign matters: + pushes toward trait.")
+    p.add_argument("--alpha-sweep", type=float, nargs="+", default=[2.0, 3.0, 4.0, 6.0],
+                   help="Alphas to try during verification. The one with the largest "
+                        "positive projection delta is used for dialogue.")
     p.add_argument("--scenario", required=True)
     p.add_argument("--n-turns", type=int, default=6)
     p.add_argument("--max-new-tokens", type=int, default=120)
     p.add_argument("--temperature", type=float, default=0.9)
     p.add_argument("--threshold", type=float, default=0.5,
-                   help="Required delta in mean residual projection (steered text - "
-                        "baseline text) for the verification check to pass. Below "
-                        "this we treat the steering as ineffective.")
+                   help="Required delta in last-token chat-wrap projection (steered "
+                        "text - baseline text) for verification. Default 0.5 is "
+                        "calibrated for L15 last-token signals; lower if signal "
+                        "magnitude is consistently below 1.")
     p.add_argument("--force", action="store_true",
                    help="Run dialogues even if verification fails.")
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
@@ -273,16 +324,20 @@ def main() -> None:
     vector = load_vector(Path(args.vector_cache), args.model, args.trait, args.layer).to(device)
     harness = SteeringHarness(model, tok, layer=args.layer)
 
-    print(f"\n=== verification: trait={args.trait} alpha={args.alpha} layer={args.layer} ===", flush=True)
+    print(f"\n=== verification: trait={args.trait} alpha-sweep={args.alpha_sweep} "
+          f"layer={args.layer} ===", flush=True)
     passed, vinfo = verify_steering(
-        model, tok, harness, vector, args.alpha, args.scenario, args.layer, device,
+        model, tok, harness, vector, args.alpha_sweep, args.scenario, args.layer, device,
         args.max_new_tokens, args.temperature, args.threshold,
     )
-    print(f"  baseline text: {vinfo['baseline_text'][:200]!r}", flush=True)
-    print(f"  steered  text: {vinfo['steered_text'][:200]!r}", flush=True)
     print(f"  baseline projection: {vinfo['baseline_projection']:+.4f}", flush=True)
-    print(f"  steered  projection: {vinfo['steered_projection']:+.4f}", flush=True)
-    print(f"  delta = {vinfo['delta']:+.4f}  (threshold {args.threshold:+.2f})  "
+    print(f"  baseline text     : {vinfo['baseline_text'][:200]!r}", flush=True)
+    for s in vinfo["sweep"]:
+        mark = " <-- chosen" if s["alpha"] == vinfo["alpha_chosen"] else ""
+        print(f"  alpha={s['alpha']:+.1f}  proj={s['steered_projection']:+.4f}  "
+              f"delta={s['delta']:+.4f}{mark}", flush=True)
+        print(f"    text: {s['steered_text'][:200]!r}", flush=True)
+    print(f"  best delta = {vinfo['best_delta']:+.4f}  (threshold {args.threshold:+.2f})  "
           f"=> {'PASS' if passed else 'FAIL'}", flush=True)
 
     (out_dir / "verification.json").write_text(json.dumps(vinfo, indent=2))
@@ -292,6 +347,7 @@ def main() -> None:
         sys.exit(2)
 
     base_proj = vinfo["baseline_projection"]
+    args.alpha = vinfo["alpha_chosen"]  # downstream uses the picked alpha
 
     for setting in ["alice_starts", "bob_starts"]:
         print(f"\n=== dialogue: {setting} ===", flush=True)

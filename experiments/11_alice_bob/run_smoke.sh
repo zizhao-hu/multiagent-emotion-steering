@@ -33,11 +33,11 @@ python scripts/two_agent_dialogue.py \
     --layer 15 \
     --vector-cache vectors/cache \
     --trait joy \
-    --alpha 4.0 \
+    --alpha-sweep 2 3 4 6 \
     --scenario "Alice and Bob are deciding how to spend a free Saturday afternoon." \
     --n-turns 6 \
     --max-new-tokens 120 \
     --temperature 0.9 \
     --threshold 0.5 \
     --dtype bf16 \
-    --out-dir runs/11_alice_bob/llama3_8b_joy_a4_smoke
+    --out-dir runs/11_alice_bob/llama3_8b_joy_smoke
