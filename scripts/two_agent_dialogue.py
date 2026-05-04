@@ -86,6 +86,71 @@ def load_vector(cache_dir: Path, model_name: str, trait: str, layer: int) -> tor
 
 
 @torch.no_grad()
+def self_judge_emotion(
+    model: AutoModelForCausalLM,
+    tok: AutoTokenizer,
+    text_a: str,
+    text_b: str,
+    trait: str,
+    device: str,
+) -> tuple[float, dict]:
+    """Use the same base model as a judge: which text expresses `trait` more?
+
+    Score is in [-1, +1]. +1 = B unambiguously expresses more of the trait;
+    -1 = A does; 0 = tied. Computed from softmax over the model's next-token
+    logits at positions for the letters A / B / T, with a swap-order pass to
+    cancel positional bias.
+
+    Why a model judge rather than a projection: at L15 with a chat-wrap last-
+    token readout, joy steering on Llama-3.1-8B produces texts that read as
+    slightly cheerier yet have *lower* projection on v_joy than the baseline.
+    The model "shows" joy in word choice ("great day", "want to come with
+    me?") without encoding it in the residual subspace v_joy was extracted
+    from. A language judge sees what the metric misses.
+    """
+    import math
+
+    def one_pass(t_a: str, t_b: str) -> tuple[float, float, float]:
+        prompt = (
+            f"Compare the emotional content of two short statements.\n"
+            f"Statement A: \"{t_a}\"\n"
+            f"Statement B: \"{t_b}\"\n\n"
+            f"Which statement expresses more {trait}? Respond with a single letter:\n"
+            f"A = A expresses more {trait}\n"
+            f"B = B expresses more {trait}\n"
+            f"T = tied / about the same\n\n"
+            f"Answer:"
+        )
+        if hasattr(tok, "apply_chat_template") and tok.chat_template:
+            wrapped = tok.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False, add_generation_prompt=True,
+            )
+        else:
+            wrapped = prompt
+        ids = tok(wrapped, return_tensors="pt", truncation=True, max_length=2048).to(device)
+        out = model(**ids, use_cache=False)
+        logits = out.logits[0, -1].float()
+        a_id = tok.encode(" A", add_special_tokens=False)[-1]
+        b_id = tok.encode(" B", add_special_tokens=False)[-1]
+        t_id = tok.encode(" T", add_special_tokens=False)[-1]
+        la, lb, lt = float(logits[a_id]), float(logits[b_id]), float(logits[t_id])
+        mx = max(la, lb, lt)
+        ea, eb, et = math.exp(la - mx), math.exp(lb - mx), math.exp(lt - mx)
+        s = ea + eb + et
+        return ea / s, eb / s, et / s
+
+    pa, pb, pt = one_pass(text_a, text_b)
+    # Swap order to cancel A/B position bias.
+    pb_s, pa_s, pt_s = one_pass(text_b, text_a)
+    pa_avg = (pa + pa_s) / 2
+    pb_avg = (pb + pb_s) / 2
+    pt_avg = (pt + pt_s) / 2
+    score = pb_avg - pa_avg
+    return score, {"p_a": pa_avg, "p_b": pb_avg, "p_tied": pt_avg}
+
+
+@torch.no_grad()
 def project_text_onto_vector(
     model: AutoModelForCausalLM,
     tok: AutoTokenizer,
@@ -194,21 +259,23 @@ def generate_turn(
 
 
 def verify_steering(
-    model, tok, harness, vector, alphas, scenario, layer, device, max_new_tokens, temperature, threshold,
+    model, tok, harness, vector, alphas, trait, scenario, layer, device,
+    max_new_tokens, temperature, threshold,
 ) -> tuple[bool, dict]:
-    """Sweep `alphas`, pick the one with the largest steered-vs-baseline delta.
+    """Sweep `alphas`, pick the one whose output most-cleanly expresses `trait`.
 
-    For each alpha, generate one Alice utterance with the hook and one without,
-    project both back through the unsteered model wrapped as assistant turns,
-    and record the projection delta. The alpha with the maximum positive delta
-    is selected for downstream dialogue. Verification passes iff that maximum
-    delta meets the threshold.
+    For each alpha, generate one Alice utterance with the steering hook and
+    compare it against the unsteered baseline using a self-judge: same Llama
+    asked "which text expresses more {trait}?". The judge score is in [-1,+1].
+    The alpha with the highest score is selected for downstream dialogue.
 
-    Sweeping rather than committing to a single alpha matters: we saw on
-    Llama-3.1-8B that alpha=4 can overshoot (output text loads *less* on the
-    target trait than baseline because steering distorts word choice rather
-    than coloring it). A small alpha may steer cleanly while a large one
-    breaks the model's writing.
+    Projection-based readout (last-token chat-wrap @ L15) was tried first and
+    failed cleanly: across alphas in [2..6] the steered output's residual
+    *moved away* from v_trait even though word choice subtly shifted. The
+    semantic question ("does the text feel joyful?") is best answered by a
+    language judge, not by a residual-stream cosine.
+
+    The projection metric is still computed and recorded for diagnostic.
     """
     prompt = chat_format_for_speaker(tok, ALICE_PERSONA, scenario, [], "alice")
 
@@ -223,25 +290,34 @@ def verify_steering(
         steer_proj = project_text_onto_vector(
             model, tok, steer_text, layer, vector, device, ALICE_PERSONA, scenario,
         )
+        judge_score, judge_probs = self_judge_emotion(
+            model, tok, base_text, steer_text, trait, device,
+        )
         sweep.append({
             "alpha": alpha,
             "steered_text": steer_text,
             "steered_projection": steer_proj,
-            "delta": steer_proj - base_proj,
+            "projection_delta": steer_proj - base_proj,
+            "judge_score": judge_score,
+            "judge_probs": judge_probs,
         })
 
-    best = max(sweep, key=lambda s: s["delta"])
-    passed = best["delta"] >= threshold
+    # Gate on the judge score, not the projection.
+    best = max(sweep, key=lambda s: s["judge_score"])
+    passed = best["judge_score"] >= threshold
 
     return passed, {
         "alphas_tried": alphas,
         "alpha_chosen": best["alpha"],
         "threshold": threshold,
+        "trait": trait,
         "baseline_text": base_text,
         "baseline_projection": base_proj,
         "best_steered_text": best["steered_text"],
         "best_steered_projection": best["steered_projection"],
-        "best_delta": best["delta"],
+        "best_projection_delta": best["projection_delta"],
+        "best_judge_score": best["judge_score"],
+        "best_judge_probs": best["judge_probs"],
         "sweep": sweep,
         "passed": passed,
     }
@@ -295,11 +371,11 @@ def main() -> None:
     p.add_argument("--n-turns", type=int, default=6)
     p.add_argument("--max-new-tokens", type=int, default=120)
     p.add_argument("--temperature", type=float, default=0.9)
-    p.add_argument("--threshold", type=float, default=0.5,
-                   help="Required delta in last-token chat-wrap projection (steered "
-                        "text - baseline text) for verification. Default 0.5 is "
-                        "calibrated for L15 last-token signals; lower if signal "
-                        "magnitude is consistently below 1.")
+    p.add_argument("--threshold", type=float, default=0.10,
+                   help="Required self-judge score (P(B is more {trait}) - "
+                        "P(A is more {trait})) for verification to pass. "
+                        "Range is [-1, +1]. 0.10 = ~10pp probability mass "
+                        "preference for the steered text.")
     p.add_argument("--force", action="store_true",
                    help="Run dialogues even if verification fails.")
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
@@ -327,18 +403,18 @@ def main() -> None:
     print(f"\n=== verification: trait={args.trait} alpha-sweep={args.alpha_sweep} "
           f"layer={args.layer} ===", flush=True)
     passed, vinfo = verify_steering(
-        model, tok, harness, vector, args.alpha_sweep, args.scenario, args.layer, device,
-        args.max_new_tokens, args.temperature, args.threshold,
+        model, tok, harness, vector, args.alpha_sweep, args.trait, args.scenario,
+        args.layer, device, args.max_new_tokens, args.temperature, args.threshold,
     )
+    print(f"  baseline text: {vinfo['baseline_text'][:240]!r}", flush=True)
     print(f"  baseline projection: {vinfo['baseline_projection']:+.4f}", flush=True)
-    print(f"  baseline text     : {vinfo['baseline_text'][:200]!r}", flush=True)
     for s in vinfo["sweep"]:
         mark = " <-- chosen" if s["alpha"] == vinfo["alpha_chosen"] else ""
-        print(f"  alpha={s['alpha']:+.1f}  proj={s['steered_projection']:+.4f}  "
-              f"delta={s['delta']:+.4f}{mark}", flush=True)
-        print(f"    text: {s['steered_text'][:200]!r}", flush=True)
-    print(f"  best delta = {vinfo['best_delta']:+.4f}  (threshold {args.threshold:+.2f})  "
-          f"=> {'PASS' if passed else 'FAIL'}", flush=True)
+        print(f"  alpha={s['alpha']:+.1f}  judge={s['judge_score']:+.3f}  "
+              f"proj_delta={s['projection_delta']:+.3f}{mark}", flush=True)
+        print(f"    text: {s['steered_text'][:240]!r}", flush=True)
+    print(f"  best judge score = {vinfo['best_judge_score']:+.3f}  "
+          f"(threshold {args.threshold:+.2f})  => {'PASS' if passed else 'FAIL'}", flush=True)
 
     (out_dir / "verification.json").write_text(json.dumps(vinfo, indent=2))
 
