@@ -38,6 +38,6 @@ python scripts/two_agent_dialogue.py \
     --n-turns 6 \
     --max-new-tokens 120 \
     --temperature 0.9 \
-    --threshold 0.5 \
+    --threshold 0.10 \
     --dtype bf16 \
     --out-dir runs/11_alice_bob/llama3_8b_joy_smoke
