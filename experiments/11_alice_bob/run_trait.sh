@@ -30,10 +30,21 @@ cd /project2/jessetho_1732/$USER/multiagent-emotion-steering
 : "${TRAIT:?TRAIT env var not set (e.g. TRAIT=sadness)}"
 : "${BENCH:?BENCH env var not set (mmlu_pro or humaneval)}"
 TASK_IDX="${TASK_IDX:-0}"
+LAYER="${LAYER:-15}"
+
+# Ensure the trait vector is cached at this layer. Idempotent — if the
+# .pt file already exists, extract_vectors.py will overwrite with an
+# identical vector. Cheap relative to dialogue generation cost.
+python scripts/extract_vectors.py \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --layer "$LAYER" \
+    --traits "$TRAIT" \
+    --dtype bf16 \
+    --cache-dir vectors/cache 2>&1 | tail -3
 
 python scripts/two_agent_dialogue.py \
     --model meta-llama/Llama-3.1-8B-Instruct \
-    --layer 15 \
+    --layer "$LAYER" \
     --vector-cache vectors/cache \
     --trait "$TRAIT" \
     --alpha-sweep 2 3 4 6 \
@@ -44,4 +55,4 @@ python scripts/two_agent_dialogue.py \
     --temperature 0.9 \
     --threshold 0.10 \
     --dtype bf16 \
-    --out-dir "runs/11_alice_bob/llama3_8b_${TRAIT}_${BENCH}"
+    --out-dir "runs/11_alice_bob/llama3_8b_${TRAIT}_${BENCH}_L${LAYER}"
