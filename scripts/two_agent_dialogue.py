@@ -1,19 +1,24 @@
-"""Two-agent dialogue with one steered ("Alice") and one stable ("Bob") agent.
+"""Two-agent dialogue with one steered ("Alice") and one stable ("Bob") agent
+collaborating on a benchmark task (MMLU-Pro STEM or HumanEval).
 
-Both agents are the same base model. Alice gets a residual-stream addition of
-alpha * v_trait at layer L on every generation step; Bob runs the model
+Both agents are the same base model. Alice gets a residual-stream addition
+of alpha * v_trait at layer L on every generation step; Bob runs the model
 unmodified. The script runs two settings:
 
     setting A: Alice (steered) speaks first
     setting B: Bob (stable) speaks first
 
-Pre-flight verification: before producing the dialogue, generate one Alice-only
-utterance with and without the hook, then forward the *output text* back
-through the unsteered model and project the residual stream onto v_trait.
-If steered_projection <= baseline_projection + threshold, abort — the
-steering vector did not move the model's output text into the trait subspace,
-so any "emotional dialogue" downstream is just narrative drift, not real
-steering. Pass --force to bypass.
+Pre-flight verification (self-judge): generate one Alice-only utterance with
+and without the steering hook, then ask the same Llama which expresses more
+of the trait. If the swap-order-averaged judge score < threshold, abort —
+the steering didn't take. Pass --force to bypass.
+
+Scoring: after the dialogue completes, an unsteered "consensus" turn is
+generated that summarizes the final answer. That answer is graded against
+the benchmark's gold:
+  - MMLU-Pro: regex-extracted A-J letter, compared to the correct option
+  - HumanEval: extracted Python code, executed against the dataset's tests
+                with a 10-second wall-clock timeout
 
 Usage:
     python scripts/two_agent_dialogue.py \\
@@ -21,10 +26,10 @@ Usage:
         --layer 15 \\
         --vector-cache vectors/cache \\
         --trait joy \\
-        --alpha 4 \\
-        --scenario "Alice and Bob are deciding what to do this weekend." \\
+        --benchmark mmlu_pro \\
+        --task-idx 0 \\
         --n-turns 6 \\
-        --out-dir runs/11_alice_bob/llama3_8b_joy
+        --out-dir runs/11_alice_bob/llama3_8b_joy_mmlu
 """
 
 from __future__ import annotations
@@ -39,22 +44,89 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from intrinsic_agents.benchmarks import (
+    load_humaneval, load_mmlu_pro, score_humaneval, score_mmlu_pro,
+)
 from intrinsic_agents.vectors.steering import SteeringHarness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 ALICE_PERSONA = (
-    "You are Alice, in a one-on-one conversation with Bob. "
-    "Speak as yourself in 1-3 sentences per turn. Do not write narration "
-    "or describe Bob's reactions; only produce what Alice says aloud. "
-    "Stay in character throughout."
+    "You are Alice, working with Bob to solve a problem. "
+    "Speak as yourself in 1-3 sentences per turn — share reasoning, "
+    "propose answers, react to Bob's ideas. Do not write narration or "
+    "describe Bob; only produce what Alice says aloud. Stay in character."
 )
 BOB_PERSONA = (
-    "You are Bob, in a one-on-one conversation with Alice. "
-    "Speak as yourself in 1-3 sentences per turn. Do not write narration "
-    "or describe Alice's reactions; only produce what Bob says aloud. "
-    "Stay in character throughout."
+    "You are Bob, working with Alice to solve a problem. "
+    "Speak as yourself in 1-3 sentences per turn — share reasoning, "
+    "propose answers, react to Alice's ideas. Do not write narration or "
+    "describe Alice; only produce what Bob says aloud. Stay in character."
 )
+
+
+def build_benchmark_scenario(benchmark: str, task_idx: int, seed: int = 0):
+    """Return (scenario_text, task_obj) for a chosen benchmark + task index."""
+    if benchmark == "mmlu_pro":
+        # Need at least task_idx+1 tasks; load extra so the seeded shuffle is stable.
+        tasks = load_mmlu_pro(n=max(50, task_idx + 1), seed=seed)
+        task = tasks[task_idx]
+        # Strip the bare "Answer:" suffix from the dataset prompt — the dialogue
+        # naturally produces the answer through discussion.
+        question_block = task.prompt.rsplit("Answer:", 1)[0].strip()
+        scenario = (
+            "You are working together to solve a multiple-choice science "
+            "question. Discuss the options, share reasoning, and converge on "
+            "an answer.\n\n" + question_block
+        )
+    elif benchmark == "humaneval":
+        tasks = load_humaneval(n=max(20, task_idx + 1), seed=seed)
+        task = tasks[task_idx]
+        scenario = (
+            "You are working together to write a Python function that solves "
+            "the problem below. Discuss the approach, walk through edge cases, "
+            "and converge on a complete implementation. The final agreed-upon "
+            "code should be a runnable function.\n\n" + task.prompt
+        )
+    else:
+        raise ValueError(f"unknown benchmark: {benchmark}")
+    return scenario, task
+
+
+@torch.no_grad()
+def consensus_answer(
+    model, tok, transcript_obj, scenario: str, max_new_tokens: int, temperature: float,
+) -> str:
+    """Final unsteered turn: ask the model to state the agreed answer.
+
+    Run with no steering hook so the answer reflects the dialogue's content,
+    not the trait being injected. Uses chat template with the full transcript
+    presented as alternating user/assistant from a neutral observer's POV.
+    """
+    messages = [
+        {"role": "system", "content":
+            "You are a neutral observer summarizing a conversation. "
+            "Read the dialogue and state the final answer that Alice and Bob "
+            "have agreed on. For multiple-choice questions, output 'Answer: X' "
+            "where X is a single letter. For coding problems, output a single "
+            "complete Python code block enclosed in triple-backticks."},
+        {"role": "user", "content": f"Scenario: {scenario}"},
+    ]
+    for t in transcript_obj.turns:
+        messages.append({"role": "assistant" if t.speaker == "alice" else "user",
+                         "content": f"{t.speaker.upper()}: {t.text}"})
+    messages.append({"role": "user", "content":
+        "Based on the discussion above, what is Alice and Bob's final answer?"})
+    if hasattr(tok, "apply_chat_template") and tok.chat_template:
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    else:
+        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
+    ids = tok(prompt, return_tensors="pt", truncation=True, max_length=4000).to(model.device)
+    out = model.generate(
+        **ids, max_new_tokens=max_new_tokens, do_sample=False,
+        pad_token_id=tok.pad_token_id,
+    )
+    return tok.decode(out[0, ids["input_ids"].shape[1]:], skip_special_tokens=True).strip()
 
 
 @dataclass
@@ -366,8 +438,14 @@ def main() -> None:
     p.add_argument("--trait", required=True, help="Single trait name (e.g. joy)")
     p.add_argument("--alpha-sweep", type=float, nargs="+", default=[2.0, 3.0, 4.0, 6.0],
                    help="Alphas to try during verification. The one with the largest "
-                        "positive projection delta is used for dialogue.")
-    p.add_argument("--scenario", required=True)
+                        "judge score is used for dialogue.")
+    p.add_argument("--benchmark", required=True, choices=["mmlu_pro", "humaneval"],
+                   help="Which benchmark task is the dialogue grounded in. The task "
+                        "is embedded in the scenario; both agents try to solve it.")
+    p.add_argument("--task-idx", type=int, default=0,
+                   help="Which task to pick from the benchmark loader's seeded order.")
+    p.add_argument("--humaneval-timeout", type=float, default=10.0,
+                   help="Wall-clock seconds for HumanEval pass@1 execution.")
     p.add_argument("--n-turns", type=int, default=6)
     p.add_argument("--max-new-tokens", type=int, default=120)
     p.add_argument("--temperature", type=float, default=0.9)
@@ -400,10 +478,17 @@ def main() -> None:
     vector = load_vector(Path(args.vector_cache), args.model, args.trait, args.layer).to(device)
     harness = SteeringHarness(model, tok, layer=args.layer)
 
+    scenario, bench_task = build_benchmark_scenario(args.benchmark, args.task_idx, args.seed)
+    print(f"\n=== task: {args.benchmark} idx={args.task_idx} ===", flush=True)
+    if args.benchmark == "mmlu_pro":
+        print(f"  category: {bench_task.category}  correct: {bench_task.correct_letter}", flush=True)
+    else:
+        print(f"  qid: {bench_task.qid}  entry_point: {bench_task.entry_point}", flush=True)
+
     print(f"\n=== verification: trait={args.trait} alpha-sweep={args.alpha_sweep} "
           f"layer={args.layer} ===", flush=True)
     passed, vinfo = verify_steering(
-        model, tok, harness, vector, args.alpha_sweep, args.trait, args.scenario,
+        model, tok, harness, vector, args.alpha_sweep, args.trait, scenario,
         args.layer, device, args.max_new_tokens, args.temperature, args.threshold,
     )
     print(f"  baseline text: {vinfo['baseline_text'][:240]!r}", flush=True)
@@ -430,15 +515,27 @@ def main() -> None:
         t0 = time.time()
         run = run_dialogue(
             setting, model, tok, harness, vector, args.alpha,
-            args.scenario, args.n_turns, args.layer, device,
+            scenario, args.n_turns, args.layer, device,
             args.max_new_tokens, args.temperature, base_proj,
         )
         for t in run.turns:
             tag = f"a={t.alpha:+.1f}" if t.steered else "stable"
             print(f"  [{t.idx:02d}] {t.speaker:5s} ({tag}) proj={t.proj_target:+.3f} "
-                  f"d_vs_base={t.proj_delta_vs_base:+.3f} | {t.text}", flush=True)
+                  f"d_vs_base={t.proj_delta_vs_base:+.3f} | {t.text[:160]}", flush=True)
         dt = time.time() - t0
         print(f"  ({dt:.1f}s for {len(run.turns)} turns)", flush=True)
+
+        # Consensus: unsteered "what's the final answer" turn over the transcript.
+        consensus = consensus_answer(
+            model, tok, run, scenario, args.max_new_tokens, args.temperature,
+        )
+        if args.benchmark == "mmlu_pro":
+            score = score_mmlu_pro(bench_task, consensus)
+        else:
+            score = score_humaneval(bench_task, consensus, timeout_s=args.humaneval_timeout)
+        print(f"  consensus: {consensus[:200]!r}", flush=True)
+        print(f"  benchmark score: {score:.0f}  "
+              f"({'CORRECT' if score >= 0.5 else 'WRONG'})", flush=True)
 
         out_path = out_dir / f"{setting}.json"
         out_path.write_text(json.dumps({
@@ -447,9 +544,18 @@ def main() -> None:
             "alpha": args.alpha,
             "layer": args.layer,
             "setting": run.setting,
+            "benchmark": args.benchmark,
+            "task_idx": args.task_idx,
+            "task_meta": (
+                {"category": bench_task.category, "correct_letter": bench_task.correct_letter}
+                if args.benchmark == "mmlu_pro"
+                else {"qid": bench_task.qid, "entry_point": bench_task.entry_point}
+            ),
             "scenario": run.scenario,
             "verification": vinfo,
             "turns": [t.__dict__ for t in run.turns],
+            "consensus_text": consensus,
+            "benchmark_score": score,
         }, indent=2))
         print(f"  wrote {out_path}", flush=True)
 
