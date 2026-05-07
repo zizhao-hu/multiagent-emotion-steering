@@ -54,7 +54,7 @@ python scripts/two_agent_dialogue.py \
     --n-turns 6 \
     --max-new-tokens 200 \
     --temperature 0.9 \
-    --threshold 0.10 \
+    --threshold 0.05 \
     --dtype bf16 \
     $EXTRA_FLAGS \
     --out-dir "runs/12_full_grid/dialogue/${MODEL_SHORT}_${TRAIT}_${BENCH}_L${LAYER}_${STEER_MODE}"
