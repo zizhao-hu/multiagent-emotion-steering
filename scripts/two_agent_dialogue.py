@@ -510,8 +510,13 @@ def main() -> None:
     print(f"\n=== task: {args.benchmark} idx={args.task_idx} ===", flush=True)
     if args.benchmark == "mmlu_pro":
         print(f"  category: {bench_task.category}  correct: {bench_task.correct_letter}", flush=True)
-    else:
+    elif args.benchmark == "humaneval":
         print(f"  qid: {bench_task.qid}  entry_point: {bench_task.entry_point}", flush=True)
+    elif args.benchmark == "gsm8k":
+        print(f"  qid: {bench_task.qid}  correct: {bench_task.correct_answer}", flush=True)
+    elif args.benchmark == "gpqa":
+        print(f"  qid: {bench_task.qid}  domain: {bench_task.domain}  "
+              f"correct: {bench_task.correct_letter}", flush=True)
 
     print(f"\n=== verification: trait={args.trait} alpha-sweep={args.alpha_sweep} "
           f"layer={args.layer} ===", flush=True)
