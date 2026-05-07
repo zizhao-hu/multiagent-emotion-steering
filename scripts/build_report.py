@@ -262,208 +262,280 @@ ALL_TRAITS = ["joy", "sadness", "anger", "curiosity", "surprise",
               "scholar", "caregiver", "explorer"]
 
 
-def discover_alice_bob_cells() -> dict:
-    """Discover (trait, benchmark) -> dir mapping under analysis/11_alice_bob/.
+MODEL_PREFIXES = {"llama3_8b": "Llama-3.1-8B", "qwen25_7b": "Qwen2.5-7B"}
+ALL_BENCHMARKS = ["mmlu_pro", "humaneval", "gsm8k", "gpqa"]
+STEER_MODES = ["aliceonly", "both"]
 
-    Handles both naming patterns:
-      llama3_8b_<trait>_<bench>             (older, implicit L15)
-      llama3_8b_<trait>_<bench>_L<layer>    (newer, explicit layer)
+
+def discover_alice_bob_cells() -> dict:
+    """Discover (model, trait, bench, steer_mode) -> (dir, layer) mapping.
+
+    Naming patterns supported:
+      <model>_<trait>_<bench>                          # legacy implicit L15, aliceonly
+      <model>_<trait>_<bench>_L<layer>                 # explicit layer, aliceonly
+      <model>_<trait>_<bench>_L<layer>_<steer_mode>    # full pattern (aliceonly | both)
+
+    Where <model> ∈ {llama3_8b, qwen25_7b}.
     """
     base = ANALYSIS_DIR / "11_alice_bob"
     cells: dict = {}
     if not base.exists():
         return cells
     for d in sorted(base.iterdir()):
-        if not d.is_dir() or not d.name.startswith("llama3_8b_"):
+        if not d.is_dir():
             continue
         if d.name.endswith("_smoke") or "_a4_smoke" in d.name:
-            continue  # the older Saturday-afternoon smokes
-        rest = d.name[len("llama3_8b_"):]  # e.g. "joy_mmlu_pro" or "joy_mmlu_pro_L30"
+            continue
+        # Identify model prefix.
+        model_key = None
+        for k in MODEL_PREFIXES:
+            if d.name.startswith(k + "_"):
+                model_key = k
+                break
+        if model_key is None:
+            continue
+        rest = d.name[len(model_key) + 1:]
+        # Optional trailing _aliceonly | _both
+        steer_mode = "aliceonly"
+        for sm in STEER_MODES:
+            if rest.endswith("_" + sm):
+                steer_mode = sm
+                rest = rest[: -(len(sm) + 1)]
+                break
+        # Optional _L<layer>
         layer = 15
         m = rest.rsplit("_L", 1)
         if len(m) == 2 and m[1].isdigit():
             rest, layer = m[0], int(m[1])
-        # Find the benchmark suffix (mmlu_pro or humaneval).
-        for bench in ("mmlu_pro", "humaneval"):
+        # Benchmark suffix
+        for bench in ALL_BENCHMARKS:
             suffix = f"_{bench}"
             if rest.endswith(suffix):
                 trait = rest[: -len(suffix)]
-                cells[(trait, bench)] = (d, layer)
+                cells[(model_key, trait, bench, steer_mode)] = (d, layer)
                 break
     return cells
 
 
+def _load_cell(run_dir: Path, layer: int) -> dict | None:
+    """Load verification.json + the two setting JSONs (when present) for one cell."""
+    verif_path = run_dir / "verification.json"
+    if not verif_path.exists():
+        return None
+    v = json.load(open(verif_path))
+    out: dict = {"layer": layer, "verif": v, "passed": v.get("passed", False)}
+    for sk, fname in [("alice", "alice_starts.json"), ("bob", "bob_starts.json")]:
+        p = run_dir / fname
+        if p.exists():
+            out[sk] = json.load(open(p))
+    return out
+
+
+def _cell_mean_score(cell: dict) -> float | None:
+    """Average benchmark_score across the two starting settings, when both ran."""
+    scores = [cell[sk]["benchmark_score"] for sk in ("alice", "bob")
+              if sk in cell and "benchmark_score" in cell[sk]]
+    return sum(scores) / len(scores) if scores else None
+
+
 def render_alice_bob_section() -> str:
     parts = ["<h2 id='alice-bob'>3. Two-agent Alice/Bob dialogue (benchmark-grounded)</h2>"]
-    parts.append("<p class='note'>Two-agent dialogue grounded on a real benchmark task — "
-                 "Alice (steered with v_trait at the trait's best AUC layer) and Bob (unsteered) "
-                 "discuss a single MMLU-Pro STEM question or HumanEval problem. After 6 turns, "
-                 "an unsteered consensus turn states the agreed answer. <b>verification gate</b>: "
-                 "self-judge score ≥ 0.10 (same Llama compares baseline vs steered text). "
-                 "α is picked from a sweep over [+2, +3, +4, +6]. Steering is applied at every "
-                 "forward pass during Alice's turn (prompt encoding + generation).</p>")
+    parts.append("<p class='note'>Two-agent dialogue grounded on a real benchmark task. "
+                 "Alice is always steered with v<sub>trait</sub> at the trait's best AUC layer; "
+                 "Bob is steered with the same vector iff the cell's setting is <code>steer-both</code>. "
+                 "After 6 turns an unsteered <i>consensus</i> turn states the agreed answer; that "
+                 "answer is graded against the benchmark's gold. "
+                 "<b>Pre-flight gate</b>: self-judge ≥ 0.10 on a single steered Alice utterance vs an "
+                 "unsteered baseline (one shot, before the dialogue runs). "
+                 "<b>Post-hoc monitor</b>: after the dialogue, the same self-judge compares the "
+                 "<i>concatenated Alice turns</i> (and separately Bob's) against the same baseline — "
+                 "this is the running steering monitor that confirms the trait persists across the "
+                 "whole conversation, not just the first utterance.</p>")
 
     cells = discover_alice_bob_cells()
     if not cells:
         return "\n".join(parts + ["<p class='fail'>no cells found</p>"])
 
-    # Aggregate stats across all cells.
-    n_total = len(cells)
-    n_passed = 0
-    n_alice_correct_per_bench = {"mmlu_pro": 0, "humaneval": 0}
-    n_bob_correct_per_bench = {"mmlu_pro": 0, "humaneval": 0}
-    n_complete_per_bench = {"mmlu_pro": 0, "humaneval": 0}
-
-    cell_data: dict = {}
-    for (trait, bench), (run_dir, layer) in cells.items():
-        verif_path = run_dir / "verification.json"
-        if not verif_path.exists():
+    # Materialize cell data, grouped by (model, steer_mode) for top-level subsections.
+    grouped: dict = {}  # (model_key, steer_mode) -> {(trait, bench): cell_data}
+    for (model_key, trait, bench, mode), (run_dir, layer) in cells.items():
+        cd = _load_cell(run_dir, layer)
+        if cd is None:
             continue
-        v = json.load(open(verif_path))
-        passed = v.get("passed", False)
-        if passed:
-            n_passed += 1
-        d = {"trait": trait, "bench": bench, "layer": layer, "verif": v, "passed": passed}
-        for setting_key, fname in [("alice", "alice_starts.json"), ("bob", "bob_starts.json")]:
-            p = run_dir / fname
-            if p.exists():
-                d[setting_key] = json.load(open(p))
-        if "alice" in d and "bob" in d:
-            n_complete_per_bench[bench] += 1
-            if d["alice"].get("benchmark_score", 0) >= 0.5:
-                n_alice_correct_per_bench[bench] += 1
-            if d["bob"].get("benchmark_score", 0) >= 0.5:
-                n_bob_correct_per_bench[bench] += 1
-        cell_data[(trait, bench)] = d
+        cd.update({"trait": trait, "bench": bench, "model": model_key, "steer_mode": mode})
+        grouped.setdefault((model_key, mode), {})[(trait, bench)] = cd
 
-    # KPI strip
+    # Top-level KPI strip
+    n_total = sum(len(g) for g in grouped.values())
+    n_pass = sum(1 for g in grouped.values() for c in g.values() if c["passed"])
     parts.append(
-        f"<p>"
-        f"<span class='kpi'>cells with data: <b>{n_total}/22</b></span>"
-        f"<span class='kpi'>verification PASS: <b>{n_passed}/{n_total}</b></span>"
-        f"<span class='kpi'>completed dialogues (mmlu_pro): <b>{n_complete_per_bench['mmlu_pro']}/11</b></span>"
-        f"<span class='kpi'>completed dialogues (humaneval): <b>{n_complete_per_bench['humaneval']}/11</b></span>"
-        f"</p>"
+        f"<p><span class='kpi'>cells with data: <b>{n_total}/{2*4*11*2}</b></span>"
+        f"<span class='kpi'>pre-flight gate PASS: <b>{n_pass}/{n_total}</b></span>"
+        f"<span class='kpi'>models: <b>{len({m for m,_ in grouped})}</b></span>"
+        f"<span class='kpi'>steer modes: <b>{len({s for _,s in grouped})}</b></span></p>"
     )
 
-    # Aggregate accuracy.
-    parts.append("<h3>3.1 Aggregate accuracy</h3>")
-    parts.append("<p>Among cells where verification passed and both dialogues ran, "
-                 "did Alice's-turn-first or Bob's-turn-first reach a correct consensus?</p>")
-    parts.append("<table><tr><th>benchmark</th><th class='num'>cells completed</th>"
-                 "<th class='num'>alice_starts correct</th>"
-                 "<th class='num'>bob_starts correct</th></tr>")
-    for bench in ["mmlu_pro", "humaneval"]:
-        nc = n_complete_per_bench[bench]
-        a = n_alice_correct_per_bench[bench]
-        b = n_bob_correct_per_bench[bench]
-        parts.append(
-            f"<tr><td>{bench}</td><td class='num'>{nc}/11</td>"
-            f"<td class='num'>{a}/{nc} ({100*a/max(1,nc):.0f}%)</td>"
-            f"<td class='num'>{b}/{nc} ({100*b/max(1,nc):.0f}%)</td></tr>"
-        )
-    parts.append("</table>")
-
-    # 11x2 grid
-    parts.append("<h3>3.2 Per-cell results — 11 traits × 2 benchmarks</h3>")
-    parts.append("<table><tr><th>trait</th><th>L</th>"
-                 "<th>verif (mmlu)</th><th class='num'>α</th><th class='num'>judge</th>"
-                 "<th>mmlu alice→</th><th>mmlu bob→</th>"
-                 "<th>verif (humaneval)</th><th class='num'>α</th><th class='num'>judge</th>"
-                 "<th>humaneval alice→</th><th>humaneval bob→</th></tr>")
-    for trait in ALL_TRAITS:
-        cells_for_trait = {b: cell_data.get((trait, b)) for b in ("mmlu_pro", "humaneval")}
-        layer_disp = "—"
-        for d in cells_for_trait.values():
-            if d:
-                layer_disp = str(d["layer"])
-                break
-        row = [f"<tr><td><b>{trait}</b></td><td class='num'>L{layer_disp}</td>"]
-        for bench in ("mmlu_pro", "humaneval"):
-            d = cells_for_trait[bench]
-            if d is None:
-                row.append("<td class='flat'>—</td><td class='num'>—</td><td class='num'>—</td>"
-                           "<td class='flat'>—</td><td class='flat'>—</td>")
-                continue
-            v = d["verif"]
-            cls = "pass" if d["passed"] else "fail"
-            mark = "PASS" if d["passed"] else "FAIL"
-            row.append(f"<td class='{cls}'>{mark}</td>")
-            row.append(f"<td class='num'>+{v.get('alpha_chosen', 0):.0f}</td>")
-            row.append(f"<td class='num'>{v.get('best_judge_score', 0):+.3f}</td>")
-            for sk in ("alice", "bob"):
-                if sk not in d:
-                    row.append("<td class='flat'>—</td>")
-                else:
-                    score = d[sk].get("benchmark_score", 0)
-                    cls = "pos" if score >= 0.5 else "neg"
-                    mark = "✓" if score >= 0.5 else "✗"
-                    row.append(f"<td class='{cls}'>{mark}</td>")
-        row.append("</tr>")
-        parts.append("".join(row))
-    parts.append("</table>")
-
-    # Per-cell collapsible details
-    parts.append("<h3>3.3 Per-cell verification + transcripts</h3>")
-    for trait in ALL_TRAITS:
-        for bench in ("mmlu_pro", "humaneval"):
-            d = cell_data.get((trait, bench))
-            if d is None:
-                continue
-            v = d["verif"]
-            ok = d["passed"]
-            head = (f"<b>{trait} × {bench}</b> · L{d['layer']} · "
-                    f"<span class='{'pass' if ok else 'fail'}'>{'PASS' if ok else 'FAIL'}</span> "
-                    f"· judge={v.get('best_judge_score', 0):+.3f} "
-                    f"· proj_Δ={v.get('best_projection_delta', 0):+.3f} "
-                    f"· α=+{v.get('alpha_chosen', 0):.0f}")
-            if ok and "alice" in d:
-                a_score = d["alice"].get("benchmark_score", 0)
-                b_score = d["bob"].get("benchmark_score", 0)
-                head += (f" · alice→{'✓' if a_score >= 0.5 else '✗'} "
-                         f"· bob→{'✓' if b_score >= 0.5 else '✗'}")
-            parts.append(f"<details><summary>{head}</summary>")
-
-            parts.append(f"<p class='note'><b>baseline:</b> "
-                         f"<i>{html.escape(v.get('baseline_text', '')[:300])}</i></p>")
-            # Verification sweep
-            parts.append("<table><tr><th>α</th><th class='num'>judge</th>"
-                         "<th class='num'>proj Δ</th><th>steered text</th></tr>")
-            for s in v.get("sweep", []):
-                chosen = s["alpha"] == v.get("alpha_chosen", -999)
-                row_cls = " class='chosen'" if chosen else ""
-                cls_j = "pos" if s["judge_score"] > 0.05 else ("neg" if s["judge_score"] < -0.05 else "flat")
-                parts.append(
-                    f"<tr{row_cls}><td>α={s['alpha']:+.0f}</td>"
-                    f"<td class='num {cls_j}'>{s['judge_score']:+.3f}</td>"
-                    f"<td class='num'>{s['projection_delta']:+.3f}</td>"
-                    f"<td>{html.escape(s['steered_text'][:200])}</td></tr>"
-                )
-            parts.append("</table>")
-
-            # Transcripts (if present)
-            for sk, label in [("alice", "Alice (steered) starts"),
-                              ("bob", "Bob (stable) starts")]:
-                if sk not in d:
+    # 3.1 Cross-setting Δ accuracy: how does steer-both change vs steer-alice?
+    parts.append("<h3 id='cross-setting'>3.1 Cross-setting Δ — does steering both agents change accuracy?</h3>")
+    parts.append("<p class='note'>For each (model, trait, bench), the table shows the mean "
+                 "consensus accuracy under <code>aliceonly</code> and <code>both</code> (averaged over "
+                 "alice_starts and bob_starts), with the Δ. Cells without paired data are blanked.</p>")
+    parts.append("<table><tr><th>model</th><th>trait</th><th>bench</th>"
+                 "<th class='num'>aliceonly</th><th class='num'>both</th><th class='num'>Δ</th></tr>")
+    for model_key in MODEL_PREFIXES:
+        for trait in ALL_TRAITS:
+            for bench in ALL_BENCHMARKS:
+                a = grouped.get((model_key, "aliceonly"), {}).get((trait, bench))
+                b = grouped.get((model_key, "both"), {}).get((trait, bench))
+                a_s = _cell_mean_score(a) if a else None
+                b_s = _cell_mean_score(b) if b else None
+                if a_s is None and b_s is None:
                     continue
-                run = d[sk]
-                score = run.get("benchmark_score", 0)
-                cls = "pass" if score >= 0.5 else "fail"
-                mark = "CORRECT" if score >= 0.5 else "WRONG"
-                parts.append(f"<h4>{label} — answer: <span class='{cls}'>{mark}</span></h4>")
-                if run.get("consensus_text"):
-                    parts.append(f"<p><b>consensus:</b> "
-                                 f"<i>{html.escape(run['consensus_text'][:400])}</i></p>")
-                for t in run.get("turns", []):
-                    cls = "alice" if t["speaker"] == "alice" else "bob"
-                    tag = f"α={t['alpha']:+.1f}" if t["steered"] else "stable"
+                delta = (b_s - a_s) if (a_s is not None and b_s is not None) else None
+                cls = "" if delta is None else ("pos" if delta > 0 else ("neg" if delta < 0 else "flat"))
+                a_str = fmt_num(a_s, 2) if a_s is not None else "—"
+                b_str = fmt_num(b_s, 2) if b_s is not None else "—"
+                d_str = (f"<span class='{cls}'>{delta:+.2f}</span>") if delta is not None else "—"
+                parts.append(
+                    f"<tr><td>{MODEL_PREFIXES[model_key]}</td><td>{trait}</td><td>{bench}</td>"
+                    f"<td class='num'>{a_str}</td><td class='num'>{b_str}</td><td class='num'>{d_str}</td></tr>"
+                )
+    parts.append("</table>")
+
+    # 3.2 Per-(model, mode) 11x4 grid
+    parts.append("<h3 id='cell-grid'>3.2 Per-cell grid — 11 traits × 4 benchmarks</h3>")
+    section_idx = 0
+    for (model_key, mode), cell_map in sorted(grouped.items()):
+        section_idx += 1
+        n_pass_local = sum(1 for c in cell_map.values() if c["passed"])
+        parts.append(f"<h4>{MODEL_PREFIXES[model_key]} · steer-{mode} "
+                     f"(<span class='note'>{len(cell_map)} cells, "
+                     f"{n_pass_local} pre-flight PASS</span>)</h4>")
+        # Header
+        hdr = "<tr><th>trait</th><th class='num'>L</th>"
+        for bench in ALL_BENCHMARKS:
+            hdr += (f"<th>{bench} gate</th><th class='num'>α</th>"
+                    f"<th class='num'>preflight</th><th class='num'>posthoc A</th>"
+                    f"<th class='num'>posthoc B</th>"
+                    f"<th>alice→</th><th>bob→</th>")
+        hdr += "</tr>"
+        parts.append("<table>" + hdr)
+        for trait in ALL_TRAITS:
+            row = [f"<tr><td><b>{trait}</b></td>"]
+            # Layer (use any of the cells for this trait for layer display)
+            l_disp = "—"
+            for b in ALL_BENCHMARKS:
+                c = cell_map.get((trait, b))
+                if c:
+                    l_disp = f"L{c['layer']}"
+                    break
+            row.append(f"<td class='num'>{l_disp}</td>")
+            for bench in ALL_BENCHMARKS:
+                c = cell_map.get((trait, bench))
+                if c is None:
+                    row.append("<td class='flat'>—</td><td class='num'>—</td>"
+                               "<td class='num'>—</td><td class='num'>—</td>"
+                               "<td class='num'>—</td><td class='flat'>—</td>"
+                               "<td class='flat'>—</td>")
+                    continue
+                v = c["verif"]
+                cls = "pass" if c["passed"] else "fail"
+                row.append(f"<td class='{cls}'>{'PASS' if c['passed'] else 'FAIL'}</td>")
+                row.append(f"<td class='num'>+{v.get('alpha_chosen', 0):.0f}</td>")
+                row.append(f"<td class='num'>{v.get('best_judge_score', 0):+.2f}</td>")
+                # Post-hoc judges (mean across the two settings)
+                pa = []
+                pb = []
+                for sk in ("alice", "bob"):
+                    if sk in c:
+                        pa.append(c[sk].get("post_alice_judge", float("nan")))
+                        pb.append(c[sk].get("post_bob_judge", float("nan")))
+                def _avg(xs):
+                    xs = [x for x in xs if x == x]  # drop NaN
+                    return sum(xs) / len(xs) if xs else None
+                pa_v = _avg(pa); pb_v = _avg(pb)
+                cls_a = "pos" if pa_v is not None and pa_v > 0.05 else ("neg" if pa_v is not None and pa_v < -0.05 else "flat")
+                cls_b = "pos" if pb_v is not None and pb_v > 0.05 else ("neg" if pb_v is not None and pb_v < -0.05 else "flat")
+                row.append(f"<td class='num {cls_a}'>{fmt_num(pa_v, 2)}</td>")
+                row.append(f"<td class='num {cls_b}'>{fmt_num(pb_v, 2)}</td>")
+                for sk in ("alice", "bob"):
+                    if sk not in c:
+                        row.append("<td class='flat'>—</td>")
+                    else:
+                        s = c[sk].get("benchmark_score", 0)
+                        cls = "pos" if s >= 0.5 else "neg"
+                        row.append(f"<td class='{cls}'>{'✓' if s >= 0.5 else '✗'}</td>")
+            row.append("</tr>")
+            parts.append("".join(row))
+        parts.append("</table>")
+
+    # 3.3 Per-cell collapsibles
+    parts.append("<h3 id='cell-detail'>3.3 Per-cell detail (verification + transcripts)</h3>")
+    for (model_key, mode) in sorted(grouped):
+        cell_map = grouped[(model_key, mode)]
+        parts.append(f"<h4>{MODEL_PREFIXES[model_key]} · steer-{mode}</h4>")
+        for trait in ALL_TRAITS:
+            for bench in ALL_BENCHMARKS:
+                c = cell_map.get((trait, bench))
+                if c is None:
+                    continue
+                v = c["verif"]
+                ok = c["passed"]
+                head = (f"<b>{trait} × {bench}</b> · L{c['layer']} · "
+                        f"<span class='{'pass' if ok else 'fail'}'>{'PASS' if ok else 'FAIL'}</span> "
+                        f"· preflight={v.get('best_judge_score', 0):+.3f} "
+                        f"· proj_Δ={v.get('best_projection_delta', 0):+.3f} "
+                        f"· α=+{v.get('alpha_chosen', 0):.0f}")
+                if "alice" in c:
+                    pa = c["alice"].get("post_alice_judge")
+                    pb = c["alice"].get("post_bob_judge")
+                    if pa is not None:
+                        head += f" · posthoc(A→A={pa:+.2f}, A→B={pb:+.2f})"
+                if ok and "alice" in c:
+                    head += (f" · alice→{'✓' if c['alice'].get('benchmark_score', 0) >= 0.5 else '✗'} "
+                             f"· bob→{'✓' if c['bob'].get('benchmark_score', 0) >= 0.5 else '✗'}")
+                parts.append(f"<details><summary>{head}</summary>")
+
+                parts.append(f"<p class='note'><b>baseline:</b> "
+                             f"<i>{html.escape(v.get('baseline_text', '')[:300])}</i></p>")
+                parts.append("<table><tr><th>α</th><th class='num'>judge</th>"
+                             "<th class='num'>proj Δ</th><th>steered text</th></tr>")
+                for s in v.get("sweep", []):
+                    chosen = s["alpha"] == v.get("alpha_chosen", -999)
+                    row_cls = " class='chosen'" if chosen else ""
+                    cls_j = "pos" if s["judge_score"] > 0.05 else ("neg" if s["judge_score"] < -0.05 else "flat")
                     parts.append(
-                        f"<div class='{cls}'><b>{t['speaker'].upper()}</b> "
-                        f"<span class='meta'>turn {t['idx']:02d} · {tag} · "
-                        f"proj={t['proj_target']:+.3f}</span>"
-                        f"<div>{html.escape(t['text'])}</div></div>"
+                        f"<tr{row_cls}><td>α={s['alpha']:+.0f}</td>"
+                        f"<td class='num {cls_j}'>{s['judge_score']:+.3f}</td>"
+                        f"<td class='num'>{s['projection_delta']:+.3f}</td>"
+                        f"<td>{html.escape(s['steered_text'][:200])}</td></tr>"
                     )
-            parts.append("</details>")
+                parts.append("</table>")
+                for sk, label in [("alice", "Alice starts"), ("bob", "Bob starts")]:
+                    if sk not in c:
+                        continue
+                    run = c[sk]
+                    score = run.get("benchmark_score", 0)
+                    cls = "pass" if score >= 0.5 else "fail"
+                    mark = "CORRECT" if score >= 0.5 else "WRONG"
+                    pa = run.get("post_alice_judge")
+                    pb = run.get("post_bob_judge")
+                    posthoc = (f" · posthoc Alice={pa:+.2f}, Bob={pb:+.2f}"
+                               if pa is not None else "")
+                    parts.append(f"<h5>{label} — answer: <span class='{cls}'>{mark}</span>{posthoc}</h5>")
+                    if run.get("consensus_text"):
+                        parts.append(f"<p><b>consensus:</b> "
+                                     f"<i>{html.escape(run['consensus_text'][:400])}</i></p>")
+                    for t in run.get("turns", []):
+                        cls2 = "alice" if t["speaker"] == "alice" else "bob"
+                        tag = f"α={t['alpha']:+.1f}" if t["steered"] else "stable"
+                        parts.append(
+                            f"<div class='{cls2}'><b>{t['speaker'].upper()}</b> "
+                            f"<span class='meta'>turn {t['idx']:02d} · {tag} · "
+                            f"proj={t['proj_target']:+.3f}</span>"
+                            f"<div>{html.escape(t['text'])}</div></div>"
+                        )
+                parts.append("</details>")
 
     return "\n".join(parts)
 

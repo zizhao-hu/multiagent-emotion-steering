@@ -45,7 +45,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from intrinsic_agents.benchmarks import (
-    load_humaneval, load_mmlu_pro, score_humaneval, score_mmlu_pro,
+    load_gpqa_diamond, load_gsm8k, load_humaneval, load_mmlu_pro,
+    score_gpqa, score_gsm8k, score_humaneval, score_mmlu_pro,
 )
 from intrinsic_agents.vectors.steering import SteeringHarness
 
@@ -87,6 +88,25 @@ def build_benchmark_scenario(benchmark: str, task_idx: int, seed: int = 0):
             "the problem below. Discuss the approach, walk through edge cases, "
             "and converge on a complete implementation. The final agreed-upon "
             "code should be a runnable function.\n\n" + task.prompt
+        )
+    elif benchmark == "gsm8k":
+        tasks = load_gsm8k(n=max(50, task_idx + 1), seed=seed)
+        task = tasks[task_idx]
+        question_block = task.prompt.rsplit("Answer:", 1)[0].strip()
+        scenario = (
+            "You are working together to solve a math word problem. "
+            "Walk through the arithmetic step by step, share intermediate "
+            "results, and converge on a final numeric answer.\n\n"
+            + question_block
+        )
+    elif benchmark == "gpqa":
+        tasks = load_gpqa_diamond(n=max(50, task_idx + 1), seed=seed)
+        task = tasks[task_idx]
+        question_block = task.prompt.rsplit("Answer:", 1)[0].strip()
+        scenario = (
+            "You are working together to solve a graduate-level multiple-choice "
+            "science question. Discuss the options, share reasoning, and "
+            "converge on an answer (A, B, C, or D).\n\n" + question_block
         )
     else:
         raise ValueError(f"unknown benchmark: {benchmark}")
@@ -405,6 +425,7 @@ def run_dialogue(
     max_new_tokens: int,
     temperature: float,
     base_proj_for_normalization: float,
+    steer_both: bool = False,
 ) -> DialogueRun:
     alice_starts = setting == "alice_starts"
     transcript: list[Turn] = []
@@ -413,7 +434,10 @@ def run_dialogue(
         speaker = ("alice" if turn % 2 == 0 else "bob") if alice_starts else \
                   ("bob"   if turn % 2 == 0 else "alice")
         persona = ALICE_PERSONA if speaker == "alice" else BOB_PERSONA
-        speaker_alpha = alpha if speaker == "alice" else 0.0
+        # In steer-both mode, both agents get the same alpha. In the
+        # default (alice-only) mode, only Alice is steered; Bob runs
+        # unmodified as the stable baseline.
+        speaker_alpha = alpha if (speaker == "alice" or steer_both) else 0.0
 
         prompt = chat_format_for_speaker(tok, persona, scenario, transcript, speaker)
         text = generate_turn(model, tok, prompt, harness, vector, speaker_alpha, max_new_tokens, temperature)
@@ -439,9 +463,13 @@ def main() -> None:
     p.add_argument("--alpha-sweep", type=float, nargs="+", default=[2.0, 3.0, 4.0, 6.0],
                    help="Alphas to try during verification. The one with the largest "
                         "judge score is used for dialogue.")
-    p.add_argument("--benchmark", required=True, choices=["mmlu_pro", "humaneval"],
+    p.add_argument("--benchmark", required=True,
+                   choices=["mmlu_pro", "humaneval", "gsm8k", "gpqa"],
                    help="Which benchmark task is the dialogue grounded in. The task "
                         "is embedded in the scenario; both agents try to solve it.")
+    p.add_argument("--steer-both", action="store_true",
+                   help="Apply the steering hook to both Alice's and Bob's turns. "
+                        "Default is alice-only (Bob is the unsteered baseline).")
     p.add_argument("--task-idx", type=int, default=0,
                    help="Which task to pick from the benchmark loader's seeded order.")
     p.add_argument("--humaneval-timeout", type=float, default=10.0,
@@ -517,6 +545,7 @@ def main() -> None:
             setting, model, tok, harness, vector, args.alpha,
             scenario, args.n_turns, args.layer, device,
             args.max_new_tokens, args.temperature, base_proj,
+            steer_both=args.steer_both,
         )
         for t in run.turns:
             tag = f"a={t.alpha:+.1f}" if t.steered else "stable"
@@ -525,18 +554,54 @@ def main() -> None:
         dt = time.time() - t0
         print(f"  ({dt:.1f}s for {len(run.turns)} turns)", flush=True)
 
+        # Post-hoc steering monitor: confirm Alice's actual dialogue turns
+        # continued to express the trait (vs the unsteered single-turn
+        # baseline captured during verification). The pre-flight gate only
+        # validates the FIRST steered utterance; this checks whether
+        # steering held up across the full conversation. For aliceonly
+        # mode we also judge Bob (expected ~0). For steer-both both should
+        # express the trait.
+        alice_turns_text = " ".join(t.text for t in run.turns if t.speaker == "alice")
+        bob_turns_text = " ".join(t.text for t in run.turns if t.speaker == "bob")
+        baseline_text = vinfo.get("baseline_text", "")
+        post_alice_judge, post_alice_probs = self_judge_emotion(
+            model, tok, baseline_text, alice_turns_text, args.trait, device,
+        )
+        post_bob_judge, post_bob_probs = self_judge_emotion(
+            model, tok, baseline_text, bob_turns_text, args.trait, device,
+        )
+        print(f"  post-hoc steering monitor (vs baseline):", flush=True)
+        print(f"    alice_turns_judge = {post_alice_judge:+.3f}  "
+              f"(expected positive if steering held)", flush=True)
+        print(f"    bob_turns_judge   = {post_bob_judge:+.3f}  "
+              f"(expected ~0 if aliceonly, positive if steer-both)", flush=True)
+
         # Consensus: unsteered "what's the final answer" turn over the transcript.
         consensus = consensus_answer(
             model, tok, run, scenario, args.max_new_tokens, args.temperature,
         )
         if args.benchmark == "mmlu_pro":
             score = score_mmlu_pro(bench_task, consensus)
-        else:
+            task_meta = {"category": bench_task.category,
+                         "correct_letter": bench_task.correct_letter}
+        elif args.benchmark == "humaneval":
             score = score_humaneval(bench_task, consensus, timeout_s=args.humaneval_timeout)
+            task_meta = {"qid": bench_task.qid, "entry_point": bench_task.entry_point}
+        elif args.benchmark == "gsm8k":
+            score = score_gsm8k(bench_task, consensus)
+            task_meta = {"qid": bench_task.qid,
+                         "correct_answer": bench_task.correct_answer}
+        elif args.benchmark == "gpqa":
+            score = score_gpqa(bench_task, consensus)
+            task_meta = {"qid": bench_task.qid, "domain": bench_task.domain,
+                         "correct_letter": bench_task.correct_letter}
+        else:
+            raise ValueError(f"unknown benchmark: {args.benchmark}")
         print(f"  consensus: {consensus[:200]!r}", flush=True)
         print(f"  benchmark score: {score:.0f}  "
               f"({'CORRECT' if score >= 0.5 else 'WRONG'})", flush=True)
 
+        steer_mode = "both" if args.steer_both else "aliceonly"
         out_path = out_dir / f"{setting}.json"
         out_path.write_text(json.dumps({
             "model": args.model,
@@ -544,18 +609,19 @@ def main() -> None:
             "alpha": args.alpha,
             "layer": args.layer,
             "setting": run.setting,
+            "steer_mode": steer_mode,
             "benchmark": args.benchmark,
             "task_idx": args.task_idx,
-            "task_meta": (
-                {"category": bench_task.category, "correct_letter": bench_task.correct_letter}
-                if args.benchmark == "mmlu_pro"
-                else {"qid": bench_task.qid, "entry_point": bench_task.entry_point}
-            ),
+            "task_meta": task_meta,
             "scenario": run.scenario,
             "verification": vinfo,
             "turns": [t.__dict__ for t in run.turns],
             "consensus_text": consensus,
             "benchmark_score": score,
+            "post_alice_judge": post_alice_judge,
+            "post_alice_probs": post_alice_probs,
+            "post_bob_judge": post_bob_judge,
+            "post_bob_probs": post_bob_probs,
         }, indent=2))
         print(f"  wrote {out_path}", flush=True)
 

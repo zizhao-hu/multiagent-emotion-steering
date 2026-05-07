@@ -34,9 +34,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from intrinsic_agents.benchmarks import (
     load_gpqa_diamond,
+    load_gsm8k,
     load_humaneval,
     load_mmlu_pro,
     score_gpqa,
+    score_gsm8k,
     score_humaneval,
     score_mmlu_pro,
 )
@@ -119,16 +121,20 @@ def main() -> None:
     p.add_argument("--alphas", type=float, nargs="+",
                    default=[-4.0, -2.0, 0.0, 2.0, 4.0])
     p.add_argument("--benchmarks", nargs="+", default=["mmlu_pro", "humaneval"],
-                   choices=["gpqa", "mmlu_pro", "humaneval"])
+                   choices=["gpqa", "mmlu_pro", "humaneval", "gsm8k"])
     p.add_argument("--n-gpqa", type=int, default=100,
                    help="number of GPQA-Diamond tasks (max ~198, gated dataset)")
     p.add_argument("--n-mmlu-pro", type=int, default=100,
                    help="number of MMLU-Pro STEM tasks (filtered to science categories)")
     p.add_argument("--n-humaneval", type=int, default=50,
                    help="number of HumanEval tasks (max 164)")
+    p.add_argument("--n-gsm8k", type=int, default=100,
+                   help="number of GSM8K tasks (max 1319 from test split)")
     p.add_argument("--max-new-tokens-gpqa", type=int, default=256)
     p.add_argument("--max-new-tokens-mmlu-pro", type=int, default=256)
     p.add_argument("--max-new-tokens-humaneval", type=int, default=512)
+    p.add_argument("--max-new-tokens-gsm8k", type=int, default=384,
+                   help="GSM8K needs chain-of-thought room before the final number")
     p.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     p.add_argument("--out-dir", required=True)
     p.add_argument("--seed", type=int, default=0)
@@ -173,6 +179,13 @@ def main() -> None:
             load_humaneval(n=args.n_humaneval, seed=args.seed),
             score_humaneval,
             args.max_new_tokens_humaneval,
+        )
+    if "gsm8k" in args.benchmarks:
+        print(f"loading GSM8K ({args.n_gsm8k} tasks)...", flush=True)
+        benches["gsm8k"] = (
+            load_gsm8k(n=args.n_gsm8k, seed=args.seed),
+            score_gsm8k,
+            args.max_new_tokens_gsm8k,
         )
 
     harness = SteeringHarness(model, tok, layer=args.layer)

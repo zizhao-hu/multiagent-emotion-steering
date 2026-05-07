@@ -29,10 +29,12 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from intrinsic_agents.benchmarks import load_humaneval, load_mmlu_pro
+from intrinsic_agents.benchmarks import (
+    load_gpqa_diamond, load_gsm8k, load_humaneval, load_mmlu_pro,
+)
 
 CELL_RE = re.compile(
-    r"^(?P<trait>\w+)_(?P<bench>mmlu_pro|humaneval|gpqa)_alpha(?P<alpha>[+-]?\d+\.\d+)\.json$"
+    r"^(?P<trait>\w+)_(?P<bench>mmlu_pro|humaneval|gpqa|gsm8k)_alpha(?P<alpha>[+-]?\d+\.\d+)\.json$"
 )
 
 
@@ -87,6 +89,13 @@ def task_text(bench: str, idx: int, task_cache: dict) -> tuple[str, str]:
             task_cache[bench] = load_mmlu_pro(n=100, seed=0)
         elif bench == "humaneval":
             task_cache[bench] = load_humaneval(n=50, seed=0)
+        elif bench == "gsm8k":
+            task_cache[bench] = load_gsm8k(n=100, seed=0)
+        elif bench == "gpqa":
+            try:
+                task_cache[bench] = load_gpqa_diamond(n=100, seed=0)
+            except Exception:
+                task_cache[bench] = []  # gated dataset; fall back to label-only
         else:
             task_cache[bench] = []
     tasks = task_cache[bench]
@@ -101,6 +110,14 @@ def task_text(bench: str, idx: int, task_cache: dict) -> tuple[str, str]:
     elif bench == "humaneval":
         label = t.qid
         full = t.prompt
+    elif bench == "gsm8k":
+        q = t.prompt.split("Question: ", 1)[-1].split("\n\n", 1)[0]
+        label = f"{t.qid} -> {t.correct_answer}"
+        full = f"{q}  (correct: {t.correct_answer})"
+    elif bench == "gpqa":
+        q = t.prompt.split("Question: ", 1)[-1].split("\n\n", 1)[0]
+        label = f"{bench}#{t.qid} [{t.domain}] -> {t.correct_letter}"
+        full = f"{q}  (correct: {t.correct_letter})"
     else:
         label = f"{bench}#{idx}"
         full = ""
